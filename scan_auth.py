@@ -43,7 +43,7 @@ async def resolve_scan_caller(
 
     user = user_from_authorization(authorization)
     if user:
-        workspace_id = jobs.resolve_workspace_id(user.user_id)
+        workspace_id = jobs.ensure_workspace_id(user.user_id)
         plan = jobs.get_workspace_plan(workspace_id)
         return ScanCaller(
             mode="user",

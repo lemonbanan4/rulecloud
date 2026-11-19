@@ -157,6 +157,29 @@ class _SupabasePersistence:
             return None
         return str(rows[0]["id"])
 
+    def ensure_workspace_id(self, user_id: str, *, name: str = "Personal Workspace") -> Optional[str]:
+        found = self.resolve_workspace_id(user_id)
+        if found:
+            return found
+        try:
+            res = (
+                self._client.table("workspaces")
+                .insert(
+                    {
+                        "owner_id": user_id,
+                        "name": name,
+                        "plan": "free",
+                    }
+                )
+                .execute()
+            )
+            rows = res.data or []
+            if rows:
+                return str(rows[0]["id"])
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to insert workspace for user %s", user_id)
+        return self.resolve_workspace_id(user_id)
+
     def get_workspace_plan(self, workspace_id: str) -> str:
         res = (
             self._client.table("workspaces")
@@ -290,6 +313,15 @@ class JobStore:
             return self._db.resolve_workspace_id(user_id)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to resolve workspace for user %s", user_id)
+            return None
+
+    def ensure_workspace_id(self, user_id: str, *, name: str = "Personal Workspace") -> Optional[str]:
+        if not self._db:
+            return None
+        try:
+            return self._db.ensure_workspace_id(user_id, name=name)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to ensure workspace for user %s", user_id)
             return None
 
     def get_workspace_plan(self, workspace_id: Optional[str]) -> str:

@@ -215,9 +215,15 @@ def _enqueue_scan(
 
 
 def _workspace_for_user(user: AuthUser) -> str:
-    workspace_id = jobs.resolve_workspace_id(user.user_id)
+    label = "Personal Workspace"
+    if user.email:
+        label = f"{user.email.split('@')[0]}'s workspace"
+    workspace_id = jobs.ensure_workspace_id(user.user_id, name=label)
     if not workspace_id:
-        raise HTTPException(status_code=404, detail="No workspace found for user")
+        raise HTTPException(
+            status_code=503,
+            detail="Workspace unavailable — check Supabase configuration",
+        )
     return workspace_id
 
 
