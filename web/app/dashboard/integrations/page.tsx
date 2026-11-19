@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useCallback, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { GitHubIntegrationsPanel } from "@/components/integrations/GitHubIntegrationsPanel";
 import { McpIntegrationsPanel } from "@/components/integrations/McpIntegrationsPanel";
@@ -8,23 +9,31 @@ import { SnippetsPanel } from "@/components/integrations/SnippetsPanel";
 
 type Tab = "mcp" | "github" | "actions";
 
-export default function IntegrationsPage() {
-  const [tab, setTab] = useState<Tab>("mcp");
+function IntegrationsPageContent() {
+  const [tab, setTab] = useState<Tab>("github");
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const installationId = searchParams.get("installation_id");
+  const setupAction = searchParams.get("setup_action");
+
+  const clearGitHubQuery = useCallback(() => {
+    router.replace("/dashboard/integrations");
+  }, [router]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-zinc-50">Integrations</h1>
         <p className="text-sm text-zinc-500">
-          AI IDE MCP, GitHub PR bot, Actions, and direct API access.
+          GitHub App, AI IDE MCP, Actions, and direct API access.
         </p>
       </div>
 
       <div className="flex gap-1 rounded-lg border border-white/[0.08] bg-[#0F0F12] p-1">
         {(
           [
-            ["mcp", "AI IDE / MCP"],
             ["github", "GitHub PR Bot"],
+            ["mcp", "AI IDE / MCP"],
             ["actions", "Actions & curl"],
           ] as const
         ).map(([key, label]) => (
@@ -43,13 +52,25 @@ export default function IntegrationsPage() {
         ))}
       </div>
 
-      {tab === "mcp" ? (
+      {tab === "github" ? (
+        <GitHubIntegrationsPanel
+          installationIdFromQuery={installationId}
+          setupAction={setupAction}
+          onQueryConsumed={clearGitHubQuery}
+        />
+      ) : tab === "mcp" ? (
         <McpIntegrationsPanel />
-      ) : tab === "github" ? (
-        <GitHubIntegrationsPanel />
       ) : (
         <SnippetsPanel />
       )}
     </div>
+  );
+}
+
+export default function IntegrationsPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-zinc-500">Loading integrations…</p>}>
+      <IntegrationsPageContent />
+    </Suspense>
   );
 }

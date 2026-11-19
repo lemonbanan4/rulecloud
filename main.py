@@ -18,12 +18,21 @@ from api_keys import create_api_key_store
 from auth import AuthUser, get_current_user, get_optional_user
 from billing import create_billing_store
 from defaults import DEFAULT_RULES_YAML
+from github_app_auth import (
+    get_installation,
+    github_app_configured,
+    install_url_for_workspace,
+    list_installation_repos,
+)
 from github_connections import create_github_connection_store
+from github_installations import create_github_installation_store
 from github_pr_pipeline import process_github_event
 from github_webhook import (
+    connection_from_github_app,
     parse_github_webhook_body,
     resolve_webhook_connection,
     should_trigger_scan,
+    verify_github_signature,
 )
 from job_store import JobStore, SourceType, create_job_store
 from mcp_server import create_mcp_server
@@ -41,6 +50,7 @@ jobs = create_job_store()
 api_key_store = create_api_key_store()
 billing = create_billing_store()
 github_store = create_github_connection_store()
+github_app_store = create_github_installation_store()
 
 _mcp_server = create_mcp_server(jobs=jobs, api_keys=api_key_store)
 _mcp_asgi = _mcp_server.http_app(
@@ -152,6 +162,14 @@ class GitHubConnectRequest(BaseModel):
 class GitHubConnectionPatch(BaseModel):
     auto_fix_comments: Optional[bool] = None
     github_token: Optional[str] = Field(default=None, max_length=500)
+
+
+class GitHubAppCallbackRequest(BaseModel):
+    installation_id: int = Field(ge=1)
+
+
+class GitHubAppAutoFixPatch(BaseModel):
+    auto_fix_comments: bool
 
 
 def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
@@ -577,6 +595,137 @@ def patch_github_connection(
     }
 
 
+@app.get("/api/integrations/github-app/install-url")
+def github_app_install_url(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    workspace_id = _workspace_for_user(user)
+    if not github_app_configured():
+        return {"configured": False}
+    url = install_url_for_workspace(workspace_id)
+    return {"configured": True, "url": url, "workspace_id": workspace_id}
+
+
+@app.post("/api/integrations/github-app/callback")
+def github_app_callback(
+    body: GitHubAppCallbackRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not github_app_configured():
+        raise HTTPException(status_code=503, detail="GitHub App is not configured on the server")
+    if not github_app_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        meta = get_installation(body.installation_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("fetch installation %s", body.installation_id)
+        raise HTTPException(status_code=502, detail="Could not verify GitHub installation") from exc
+    account = meta.get("account") or {}
+    login = str(account.get("login") or "unknown")
+    account_type = str(account.get("type") or "User")
+    try:
+        row = github_app_store.upsert(
+            workspace_id=workspace_id,
+            owner_id=user.user_id,
+            installation_id=body.installation_id,
+            account_login=login,
+            account_type=account_type,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    try:
+        repos = list_installation_repos(body.installation_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("list repos for installation %s", body.installation_id)
+        repos = []
+    return {
+        "installation_id": row.installation_id,
+        "account_login": row.account_login,
+        "account_type": row.account_type,
+        "repo_count": len(repos),
+        "repositories": [
+            {
+                "full_name": r.get("full_name"),
+                "private": r.get("private"),
+            }
+            for r in repos[:50]
+        ],
+    }
+
+
+@app.get("/api/integrations/github-app/installations")
+def list_github_app_installations(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not github_app_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    workspace_id = _workspace_for_user(user)
+    rows = github_app_store.list_for_workspace(workspace_id, user.user_id)
+    slug = (os.getenv("GITHUB_APP_SLUG") or "rulecloud-guardrail").strip()
+    configure_url = f"https://github.com/apps/{slug}/installations/new"
+    installations: list[dict[str, Any]] = []
+    for row in rows:
+        repo_count = 0
+        if github_app_configured():
+            try:
+                repo_count = len(list_installation_repos(row.installation_id))
+            except Exception:  # noqa: BLE001
+                logger.exception("repo count for installation %s", row.installation_id)
+        installations.append(
+            {
+                "id": row.id,
+                "installation_id": row.installation_id,
+                "account_login": row.account_login,
+                "account_type": row.account_type,
+                "auto_fix_comments": row.auto_fix_comments,
+                "repo_count": repo_count,
+                "avatar_url": f"https://github.com/{row.account_login}.png",
+                "configure_url": configure_url,
+                "created_at": row.created_at,
+            }
+        )
+    return {
+        "configured": github_app_configured(),
+        "installations": installations,
+    }
+
+
+@app.patch("/api/integrations/github-app/installations/{installation_id}")
+def patch_github_app_installation(
+    installation_id: int,
+    body: GitHubAppAutoFixPatch,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not github_app_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    try:
+        ok = github_app_store.update_auto_fix(
+            installation_id, user.user_id, body.auto_fix_comments
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Installation not found")
+    return {"updated": True, "auto_fix_comments": body.auto_fix_comments}
+
+
+@app.delete("/api/integrations/github-app/installations/{installation_id}")
+def unlink_github_app_installation(
+    installation_id: int,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not github_app_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    try:
+        ok = github_app_store.unlink(installation_id, user.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Installation not found")
+    return {"unlinked": True}
+
+
 @app.delete("/api/integrations/github/{connection_id}")
 def disconnect_github_repo(
     connection_id: str,
@@ -602,6 +751,7 @@ async def github_webhook(
 ) -> dict[str, Any]:
     raw = await request.body()
     fallback = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+    app_webhook_secret = (os.getenv("GITHUB_APP_WEBHOOK_SECRET") or "").strip()
 
     try:
         payload = parse_github_webhook_body(
@@ -616,20 +766,54 @@ async def github_webhook(
             ),
         ) from exc
 
+    event_name = x_github_event or "unknown"
     repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
-    connections = (
-        github_store.get_connection_for_webhook(repo_full_name) if repo_full_name else []
-    )
 
-    verified, connection = resolve_webhook_connection(
-        raw, x_hub_signature_256, connections, fallback
+    verified_app = bool(
+        app_webhook_secret
+        and verify_github_signature(raw, x_hub_signature_256, app_webhook_secret)
     )
+    connection = None
+    verified = verified_app
+
+    if event_name == "installation":
+        if not verified_app:
+            raise HTTPException(status_code=401, detail="Invalid signature")
+        action = payload.get("action", "")
+        if action == "deleted":
+            inst = (payload.get("installation") or {}).get("id")
+            if inst is not None:
+                github_app_store.delete_by_installation_id(int(inst))
+        return {"accepted": True, "event": event_name, "action": action}
+
+    if not verified:
+        connections = (
+            github_store.get_connection_for_webhook(repo_full_name) if repo_full_name else []
+        )
+        verified, connection = resolve_webhook_connection(
+            raw, x_hub_signature_256, connections, fallback
+        )
     if not verified:
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    event_name = x_github_event or "unknown"
+    if verified_app and connection is None:
+        connection = connection_from_github_app(payload, github_app_store)
+    elif connection is None and repo_full_name:
+        legacy = github_store.get_connection_for_webhook(repo_full_name)
+        connection = legacy[0] if legacy else None
+
     if not should_trigger_scan(event_name, payload):
         return {"accepted": False, "reason": f"ignored event {event_name}"}
+
+    if connection is None:
+        logger.info(
+            "github_webhook_no_connection",
+            extra={"event": event_name, "repo": repo_full_name},
+        )
+        return {
+            "accepted": False,
+            "reason": "no linked workspace for this repository",
+        }
 
     background_tasks.add_task(
         process_github_event,
@@ -640,7 +824,12 @@ async def github_webhook(
     )
     logger.info(
         "github_webhook_accepted",
-        extra={"event": event_name, "repo": repo_full_name, "connected": bool(connection)},
+        extra={
+            "event": event_name,
+            "repo": repo_full_name,
+            "connected": bool(connection),
+            "github_app": verified_app,
+        },
     )
     return {"accepted": True, "event": event_name, "repo": repo_full_name}
 

@@ -97,3 +97,48 @@ def should_trigger_scan(github_event: str, payload: dict[str, Any]) -> bool:
     if github_event == "push":
         return True
     return False
+
+
+def installation_id_from_payload(payload: dict[str, Any]) -> Optional[int]:
+    installation = payload.get("installation") or {}
+    raw = installation.get("id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def connection_from_github_app(
+    payload: dict[str, Any],
+    installation_store: Any,
+) -> Optional[Any]:
+    """Build scan context when webhook includes a GitHub App installation id."""
+    from github_app_auth import get_installation_token
+    from github_connections import GitHubConnectionInternal
+
+    inst_id = installation_id_from_payload(payload)
+    if not inst_id:
+        return None
+    row = installation_store.get_by_installation_id(inst_id)
+    if not row:
+        logger.warning(
+            "GitHub App installation %s not linked to a RuleCloud workspace", inst_id
+        )
+        return None
+    try:
+        token = get_installation_token(inst_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("installation token failed for %s", inst_id)
+        return None
+    repo = payload.get("repository") or {}
+    full_name = str(repo.get("full_name") or "")
+    return GitHubConnectionInternal(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        repo_full_name=full_name,
+        webhook_secret="",
+        github_token=token,
+        auto_fix_comments=row.auto_fix_comments,
+    )
