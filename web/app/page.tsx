@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AuthNav } from "@/components/AuthNav";
+import { RecentScans } from "@/components/RecentScans";
+import { useAuth } from "@/contexts/auth-context";
+import { apiBase, apiFetch } from "@/lib/api";
+
 /** Used only when GET /api/defaults is unreachable (offline / API down). */
 const FALLBACK_RULES_YAML = `version: 1
 include:
@@ -9,7 +14,7 @@ include:
 rules:
   - id: hardcoded-secret
     type: regex
-    pattern: '(?i)(password|secret)\\s*=\\s*"[^"]+"'
+    pattern: "(?i)(password|secret)\\\\s*=\\\\s*\\"[^\\"]+\\""
     message: Potential hardcoded secret
 `;
 
@@ -58,11 +63,6 @@ type JobRecord = {
   result?: ScanResult | null;
   error?: string | null;
 };
-
-function apiBase(): string {
-  const base = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
-  return base || "http://localhost:8000";
-}
 
 function formatDuration(ms: number | null | undefined): string {
   if (ms == null) return "—";
@@ -123,7 +123,7 @@ function StatusBadge({ status }: { status: ScanStatus }) {
         };
       case "violations":
         return {
-          label: "VIOLATIONS",
+          label: "VIOL",
           className:
             "border-amber-400/50 bg-amber-500/15 text-amber-200 badge-glow-violations",
         };
@@ -149,7 +149,7 @@ function StatusBadge({ status }: { status: ScanStatus }) {
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold tracking-widest ${config.className}`}
+      className={`inline-flex max-w-full items-center justify-center truncate rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-wide sm:px-3 sm:py-1 sm:text-xs sm:tracking-widest ${config.className}`}
     >
       {config.label}
     </span>
@@ -157,6 +157,7 @@ function StatusBadge({ status }: { status: ScanStatus }) {
 }
 
 export default function Home() {
+  const { accessToken, user } = useAuth();
   const [mode, setMode] = useState<InputMode>("snippet");
   const [repoUrl, setRepoUrl] = useState("");
   const [filename, setFilename] = useState("Example.cs");
@@ -172,6 +173,7 @@ export default function Home() {
 
   const [elapsedSec, setElapsedSec] = useState(0);
   const [showRaw, setShowRaw] = useState(false);
+  const [recentScansKey, setRecentScansKey] = useState(0);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -194,6 +196,7 @@ export default function Home() {
       setJobError(job.error || "Job failed");
       setResult(job.result ?? null);
       stopTimers();
+      setRecentScansKey((k) => k + 1);
       return;
     }
     if (job.state === "completed" && job.result) {
@@ -204,15 +207,34 @@ export default function Home() {
       setResult(job.result);
       setJobError(job.result.error ?? null);
       stopTimers();
+      setRecentScansKey((k) => k + 1);
       return;
     }
     setDisplayStatus("scanning");
   }, [stopTimers]);
 
+  const loadJobById = useCallback(
+    async (id: string) => {
+      setJobId(id);
+      setSubmitError(null);
+      try {
+        const res = await apiFetch(`/api/jobs/${id}`, {}, accessToken);
+        if (!res.ok) {
+          throw new Error(`Could not load job (${res.status})`);
+        }
+        const job = (await res.json()) as JobRecord;
+        mapJobToUi(job);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : "Could not load job");
+      }
+    },
+    [accessToken, mapJobToUi],
+  );
+
   const pollJob = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(`${apiBase()}/api/jobs/${id}`);
+        const res = await apiFetch(`/api/jobs/${id}`, {}, accessToken);
         if (!res.ok) {
           throw new Error(`Poll failed (${res.status})`);
         }
@@ -224,7 +246,7 @@ export default function Home() {
         stopTimers();
       }
     },
-    [mapJobToUi, stopTimers],
+    [accessToken, mapJobToUi, stopTimers],
   );
 
   useEffect(() => {
@@ -235,7 +257,7 @@ export default function Home() {
     let cancelled = false;
     const loadDefaults = async () => {
       try {
-        const res = await fetch(`${apiBase()}/api/defaults`, {
+        const res = await apiFetch("/api/defaults", {
           signal: AbortSignal.timeout(8000),
         });
         if (!res.ok) return;
@@ -303,11 +325,11 @@ export default function Home() {
     scanStartedAt.current = Date.now();
 
     try {
-      const res = await fetch(`${apiBase()}/api/jobs/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const res = await apiFetch(
+        "/api/jobs/scan",
+        { method: "POST", body: JSON.stringify(body) },
+        accessToken,
+      );
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text || `Scan request failed (${res.status})`);
@@ -345,11 +367,16 @@ export default function Home() {
               ruleset. Jobs poll every 3s until complete.
             </p>
           </div>
-          <StatusBadge status={displayStatus} />
+          <div className="flex flex-wrap items-center gap-4">
+            <AuthNav />
+            <StatusBadge status={displayStatus} />
+          </div>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-2">
+      <div
+        className={`mx-auto grid max-w-6xl gap-6 ${user ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}
+      >
         <section className="glass-panel flex flex-col rounded-2xl p-5 shadow-xl shadow-black/20 sm:p-6">
           <div className="mb-5 flex gap-1 rounded-xl border border-white/10 bg-slate-900/50 p-1">
             {(
@@ -447,13 +474,13 @@ export default function Home() {
           )}
         </section>
 
-        <section className="glass-panel flex flex-col rounded-2xl p-5 shadow-xl shadow-black/20 sm:p-6">
+        <section className="glass-panel flex min-w-0 flex-col overflow-hidden rounded-2xl p-5 shadow-xl shadow-black/20 sm:p-6">
           <h2 className="text-lg font-semibold text-slate-100">Results</h2>
 
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div className="rounded-xl border border-white/10 bg-slate-900/40 p-3">
+            <div className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-slate-900/40 p-3">
               <p className="text-xs uppercase tracking-wider text-slate-500">Status</p>
-              <div className="mt-2">
+              <div className="mt-2 min-w-0">
                 <StatusBadge status={displayStatus} />
               </div>
             </div>
@@ -494,9 +521,9 @@ export default function Home() {
                 {findings.map((f, i) => (
                   <li
                     key={`${f.id ?? "finding"}-${i}`}
-                    className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm"
+                    className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm break-words"
                   >
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
                       {f.severity && (
                         <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200/90">
                           {f.severity}
@@ -509,7 +536,7 @@ export default function Home() {
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-slate-300">
+                    <p className="mt-1 break-words text-slate-300">
                       {f.message || f.id || "Issue detected"}
                     </p>
                   </li>
@@ -548,6 +575,11 @@ export default function Home() {
             )}
           </div>
         </section>
+
+        <RecentScans
+          refreshKey={recentScansKey}
+          onSelectJob={(id) => void loadJobById(id)}
+        />
       </div>
 
       <p className="mx-auto mt-8 max-w-6xl text-center font-mono text-xs text-slate-600">

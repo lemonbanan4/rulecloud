@@ -170,9 +170,9 @@ def _build_guardrail_cmd(_workdir: Path) -> list[str]:
 
 
 def _write_guard_rules(scan_root: Path, rules_yaml: str) -> None:
-    guard_dir = scan_root / ".guard"
+    guard_dir = scan_root / ".guard" / "general"
     guard_dir.mkdir(parents=True, exist_ok=True)
-    (guard_dir / "rules.yaml").write_text(rules_yaml, encoding="utf-8")
+    (guard_dir / "quality.yml").write_text(rules_yaml, encoding="utf-8")
 
 
 def run_scan(

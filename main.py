@@ -6,15 +6,16 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
+from auth import AuthUser, get_current_user, get_optional_user
 from defaults import DEFAULT_RULES_YAML
 from github_webhook import extract_scan_target, should_trigger_scan, verify_github_signature
-from job_store import JobStore
+from job_store import JobStore, SourceType, create_job_store
 from scan_runner import guardrail_available, run_scan
 
 logging.basicConfig(
@@ -42,7 +43,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-jobs = JobStore()
+jobs = create_job_store()
 
 
 class ScanRequest(BaseModel):
@@ -61,6 +62,7 @@ class ScanRequest(BaseModel):
     )
     rules_yaml: str = Field(default=DEFAULT_RULES_YAML)
     branch: Optional[str] = Field(default=None, description="Optional git branch to clone")
+    workspace_id: Optional[str] = Field(default=None, description="Optional workspace override")
 
     @model_validator(mode="after")
     def require_source(self) -> "ScanRequest":
@@ -86,10 +88,22 @@ class JobCreateResponse(BaseModel):
     state: str
 
 
+def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
+    if webhook:
+        return "github_webhook"
+    if body.code_snippet:
+        return "snippet"
+    return "api"
+
+
 def _run_job(job_id: str, payload: dict[str, Any], webhook_meta: Optional[dict[str, Any]] = None) -> None:
     jobs.mark_running(job_id)
     try:
-        scan_payload = {k: v for k, v in payload.items() if k != "_webhook_meta"}
+        scan_payload = {
+            k: v
+            for k, v in payload.items()
+            if k not in ("_webhook_meta", "_meta")
+        }
         result = run_scan(**scan_payload)
         result_dict = result.to_dict()
         jobs.complete(job_id, result_dict)
@@ -116,12 +130,29 @@ def _run_job(job_id: str, payload: dict[str, Any], webhook_meta: Optional[dict[s
 def _enqueue_scan(
     background_tasks: BackgroundTasks,
     body: ScanRequest,
+    *,
+    user: Optional[AuthUser] = None,
     webhook_meta: Optional[dict[str, Any]] = None,
+    source_type: Optional[SourceType] = None,
 ) -> str:
     payload = body.model_dump()
     if webhook_meta:
         payload["_webhook_meta"] = webhook_meta
-    record = jobs.create({k: v for k, v in payload.items() if k != "_webhook_meta"})
+
+    inferred = source_type or _infer_source_type(body, webhook=bool(webhook_meta))
+    user_id = user.user_id if user else None
+    workspace_id = body.workspace_id
+    if user_id and not workspace_id:
+        workspace_id = jobs.resolve_workspace_id(user_id)
+
+    store_request = {k: v for k, v in payload.items() if k != "_webhook_meta"}
+    record = jobs.create(
+        store_request,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        source_type=inferred,
+        rules_yaml=body.rules_yaml,
+    )
     background_tasks.add_task(_run_job, record.job_id, payload, webhook_meta)
     return record.job_id
 
@@ -143,22 +174,43 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/api/scan", response_model=ScanResponse)
-def scan_sync(body: ScanRequest) -> ScanResponse:
-    result = run_scan(**body.model_dump())
+def scan_sync(
+    body: ScanRequest,
+    user: Annotated[Optional[AuthUser], Depends(get_optional_user)] = None,
+) -> ScanResponse:
+    _ = user
+    result = run_scan(**body.model_dump(exclude={"workspace_id"}))
     return ScanResponse(**result.to_dict())
 
 
 @app.post("/api/jobs/scan", response_model=JobCreateResponse, status_code=202)
-def scan_async(body: ScanRequest, background_tasks: BackgroundTasks) -> JobCreateResponse:
-    job_id = _enqueue_scan(background_tasks, body)
+def scan_async(
+    body: ScanRequest,
+    background_tasks: BackgroundTasks,
+    user: Annotated[Optional[AuthUser], Depends(get_optional_user)] = None,
+) -> JobCreateResponse:
+    job_id = _enqueue_scan(background_tasks, body, user=user)
     return JobCreateResponse(job_id=job_id, state="queued")
 
 
+@app.get("/api/jobs")
+def list_jobs(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict[str, Any]:
+    return {"jobs": jobs.list_for_user(user.user_id, limit=50)}
+
+
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str) -> dict[str, Any]:
+def get_job(
+    job_id: str,
+    user: Annotated[Optional[AuthUser], Depends(get_optional_user)] = None,
+) -> dict[str, Any]:
     record = jobs.get(job_id)
     if not record:
         raise HTTPException(status_code=404, detail="Job not found")
+    if record.user_id:
+        if user is None:
+            raise HTTPException(status_code=401, detail="Sign in to view this scan")
+        if record.user_id != user.user_id:
+            raise HTTPException(status_code=403, detail="Not allowed to view this job")
     return record.to_dict()
 
 
@@ -200,7 +252,12 @@ async def github_webhook(
         "sha": target.get("sha"),
         "pr_number": target.get("pr_number"),
     }
-    job_id = _enqueue_scan(background_tasks, scan_body, webhook_meta=meta)
+    job_id = _enqueue_scan(
+        background_tasks,
+        scan_body,
+        webhook_meta=meta,
+        source_type="github_webhook",
+    )
     meta["job_id"] = job_id
     logger.info("github_webhook_queued", extra={"scan_meta": meta})
     return {"accepted": True, "job_id": job_id, "scan": meta}
