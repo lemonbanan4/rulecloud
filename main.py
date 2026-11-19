@@ -132,8 +132,9 @@ class GitHubConnectRequest(BaseModel):
     auto_fix_comments: bool = True
 
 
-class GitHubAutoFixToggle(BaseModel):
-    auto_fix_comments: bool
+class GitHubConnectionPatch(BaseModel):
+    auto_fix_comments: Optional[bool] = None
+    github_token: Optional[str] = Field(default=None, max_length=500)
 
 
 def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
@@ -524,22 +525,33 @@ def connect_github_repo(
 
 
 @app.patch("/api/integrations/github/{connection_id}")
-def toggle_github_autofix(
+def patch_github_connection(
     connection_id: str,
-    body: GitHubAutoFixToggle,
+    body: GitHubConnectionPatch,
     user: Annotated[AuthUser, Depends(get_current_user)],
-) -> dict[str, bool]:
+) -> dict[str, Any]:
     if not github_store.enabled:
         raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    if body.auto_fix_comments is None and not body.github_token:
+        raise HTTPException(status_code=400, detail="No fields to update")
     try:
-        ok = github_store.update_auto_fix(
-            connection_id, user.user_id, body.auto_fix_comments
+        ok = github_store.update_connection(
+            connection_id,
+            user.user_id,
+            github_token=body.github_token,
+            auto_fix_comments=body.auto_fix_comments,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Connection not found")
-    return {"updated": True, "auto_fix_comments": body.auto_fix_comments}
+    return {
+        "updated": True,
+        "auto_fix_comments": body.auto_fix_comments,
+        "token_updated": bool(body.github_token and body.github_token.strip()),
+    }
 
 
 @app.delete("/api/integrations/github/{connection_id}")

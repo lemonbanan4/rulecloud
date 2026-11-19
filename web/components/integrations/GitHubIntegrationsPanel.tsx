@@ -89,9 +89,29 @@ export function GitHubIntegrationsPanel() {
         },
         accessToken,
       );
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { webhook_secret?: string };
-      if (data.webhook_secret) setCreatedSecret(data.webhook_secret);
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text || `Failed (${res.status})`;
+        try {
+          const j = JSON.parse(text) as { detail?: string };
+          if (typeof j.detail === "string") msg = j.detail;
+        } catch {
+          /* keep raw text */
+        }
+        throw new Error(msg);
+      }
+      const data = (await res.json()) as {
+        webhook_secret?: string;
+        updated?: boolean;
+      };
+      if (data.webhook_secret && !data.updated) setCreatedSecret(data.webhook_secret);
+      if (data.updated) {
+        setCreatedSecret(null);
+        setError(null);
+        window.alert(
+          "Repository already connected — PAT saved. Copy Secret from the table into GitHub (not the PAT).",
+        );
+      }
       setRepoName("");
       setToken("");
       await load();
@@ -198,6 +218,7 @@ export function GitHubIntegrationsPanel() {
               <tr>
                 <th className="px-4 py-2">Repository</th>
                 <th className="px-4 py-2">Webhook</th>
+                <th className="px-4 py-2">GitHub PAT</th>
                 <th className="px-4 py-2">AI on PRs</th>
                 <th className="px-4 py-2" />
               </tr>
@@ -233,6 +254,13 @@ export function GitHubIntegrationsPanel() {
                         Secret
                       </button>
                     </div>
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    {r.has_token ? (
+                      <span className="text-emerald-400">Saved</span>
+                    ) : (
+                      <span className="text-amber-400">Add via form above</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <label className="inline-flex items-center gap-2 text-xs">

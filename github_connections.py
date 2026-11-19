@@ -110,12 +110,40 @@ class GitHubConnectionStore:
         if "/" not in repo or repo.count("/") != 1:
             raise ValueError("repo_full_name must be owner/repo")
 
-        webhook_secret = secrets.token_urlsafe(32)
         token_enc: Optional[str] = None
         if github_token and github_token.strip():
             token_enc = encrypt_token(github_token.strip())
 
         client = self._require()
+        existing = (
+            client.table("github_connections")
+            .select("id, webhook_secret, auto_fix_comments, github_token_encrypted")
+            .eq("workspace_id", workspace_id)
+            .eq("repo_full_name", repo)
+            .limit(1)
+            .execute()
+        )
+        backend = (os.getenv("BACKEND_URL") or "").strip().rstrip("/") or "https://your-api.example.com"
+        webhook_url = f"{backend}/api/webhook/github"
+
+        if existing.data:
+            row = existing.data[0]
+            if token_enc is not None:
+                client.table("github_connections").update(
+                    {"github_token_encrypted": token_enc}
+                ).eq("id", row["id"]).execute()
+            has_token = bool(token_enc or row.get("github_token_encrypted"))
+            return {
+                "id": row["id"],
+                "repo_full_name": repo,
+                "webhook_url": webhook_url,
+                "webhook_secret": row["webhook_secret"],
+                "has_token": has_token,
+                "auto_fix_comments": bool(row.get("auto_fix_comments", True)),
+                "updated": True,
+            }
+
+        webhook_secret = secrets.token_urlsafe(32)
         row = {
             "workspace_id": workspace_id,
             "repo_full_name": repo,
@@ -127,16 +155,14 @@ class GitHubConnectionStore:
         data = (res.data or [None])[0]
         if not data:
             raise RuntimeError("Insert failed")
-        backend = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
-        if not backend:
-            backend = "https://your-api.example.com"
         return {
             "id": data["id"],
             "repo_full_name": repo,
-            "webhook_url": f"{backend}/api/webhook/github",
+            "webhook_url": webhook_url,
             "webhook_secret": webhook_secret,
             "has_token": bool(token_enc),
             "auto_fix_comments": auto_fix_comments,
+            "updated": False,
         }
 
     def delete(self, connection_id: str, owner_id: str) -> bool:
@@ -153,6 +179,36 @@ class GitHubConnectionStore:
             return False
         self._assert_workspace_owner(str(rows[0]["workspace_id"]), owner_id)
         client.table("github_connections").delete().eq("id", connection_id).execute()
+        return True
+
+    def update_connection(
+        self,
+        connection_id: str,
+        owner_id: str,
+        *,
+        github_token: Optional[str] = None,
+        auto_fix_comments: Optional[bool] = None,
+    ) -> bool:
+        client = self._require()
+        res = (
+            client.table("github_connections")
+            .select("workspace_id")
+            .eq("id", connection_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return False
+        self._assert_workspace_owner(str(rows[0]["workspace_id"]), owner_id)
+        updates: dict[str, Any] = {}
+        if github_token is not None and github_token.strip():
+            updates["github_token_encrypted"] = encrypt_token(github_token.strip())
+        if auto_fix_comments is not None:
+            updates["auto_fix_comments"] = auto_fix_comments
+        if not updates:
+            return True
+        client.table("github_connections").update(updates).eq("id", connection_id).execute()
         return True
 
     def update_auto_fix(self, connection_id: str, owner_id: str, enabled: bool) -> bool:
