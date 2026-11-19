@@ -4,10 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 from typing import Any, Optional
+from urllib.parse import parse_qs
 
 logger = logging.getLogger(__name__)
+
+
+def parse_github_webhook_body(raw: bytes, content_type: Optional[str] = None) -> dict[str, Any]:
+    """Parse JSON body from GitHub (application/json or x-www-form-urlencoded)."""
+    if not raw:
+        raise ValueError("empty webhook body")
+    ct = (content_type or "").lower()
+    text = raw.decode("utf-8")
+    if "application/x-www-form-urlencoded" in ct or text.lstrip().startswith("payload="):
+        payload_key = parse_qs(text, keep_blank_values=True).get("payload", [""])[0]
+        if not payload_key:
+            raise ValueError("missing payload= in form body")
+        return json.loads(payload_key)
+    return json.loads(text)
 
 
 def verify_github_signature(payload: bytes, signature_header: Optional[str], secret: str) -> bool:

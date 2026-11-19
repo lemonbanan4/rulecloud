@@ -64,7 +64,15 @@ export function GitHubIntegrationsPanel() {
 
   const onConnect = async (e: FormEvent) => {
     e.preventDefault();
-    if (!accessToken || !repoName.trim()) return;
+    const full = repoName.trim();
+    if (!accessToken || !full) return;
+    if (
+      full.toLowerCase() === "owner/repo" ||
+      !/^[\w.-]+\/[\w.-]+$/.test(full)
+    ) {
+      setError('Use your real repo slug, e.g. lemonbanan4/rulecloud (not the placeholder "owner/repo").');
+      return;
+    }
     setConnecting(true);
     setError(null);
     setCreatedSecret(null);
@@ -121,7 +129,9 @@ export function GitHubIntegrationsPanel() {
           <h2 className="text-sm font-semibold text-zinc-100">Connect GitHub Repository</h2>
         </div>
         <p className="mt-2 text-sm text-zinc-500">
-          Fine-grained token permissions:{" "}
+          Enter the GitHub repository slug for this project (for RuleCloud itself, use{" "}
+          <span className="font-mono text-zinc-300">lemonbanan4/rulecloud</span>). Fine-grained token
+          permissions:{" "}
           <span className="text-zinc-300">Contents (Read)</span>,{" "}
           <span className="text-zinc-300">Pull requests (Read & Write)</span>,{" "}
           <span className="text-zinc-300">Commit statuses (Read & Write)</span>.
@@ -130,7 +140,7 @@ export function GitHubIntegrationsPanel() {
           <input
             value={repoName}
             onChange={(e) => setRepoName(e.target.value)}
-            placeholder="owner/repo"
+            placeholder="lemonbanan4/rulecloud"
             className="w-full rounded-lg border border-white/[0.08] bg-[#09090B] px-3 py-2 text-sm"
           />
           <input
@@ -155,6 +165,15 @@ export function GitHubIntegrationsPanel() {
           </p>
         ) : null}
       </article>
+
+      {repos.some((r) => r.repo_full_name.toLowerCase() === "owner/repo") ? (
+        <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+          Connected as <span className="font-mono">owner/repo</span> — that was the form placeholder.
+          Disconnect it and reconnect with your real repo (e.g.{" "}
+          <span className="font-mono">lemonbanan4/rulecloud</span>), then paste the new{" "}
+          <strong className="font-medium">Secret</strong> into GitHub.
+        </p>
+      ) : null}
 
       {error ? (
         <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
