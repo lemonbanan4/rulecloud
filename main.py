@@ -465,6 +465,12 @@ def get_job(
             raise HTTPException(status_code=401, detail="Sign in to view this scan")
         if record.user_id != user.user_id:
             raise HTTPException(status_code=403, detail="Not allowed to view this job")
+    elif record.workspace_id:
+        if user is None:
+            raise HTTPException(status_code=401, detail="Sign in to view this scan")
+        ws = jobs.resolve_workspace_id(user.user_id)
+        if not ws or ws != record.workspace_id:
+            raise HTTPException(status_code=403, detail="Not allowed to view this job")
     return record.to_dict()
 
 

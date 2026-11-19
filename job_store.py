@@ -116,16 +116,15 @@ class _SupabasePersistence:
         return _row_to_record(rows[0])
 
     def list_user_jobs(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        res = (
-            self._client.table("scan_jobs")
-            .select(
-                "id, status, created_at, source_type, violation_count, result_json, error_message"
-            )
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
+        workspace_id = self.resolve_workspace_id(user_id)
+        query = self._client.table("scan_jobs").select(
+            "id, status, created_at, source_type, violation_count, result_json, error_message"
         )
+        if workspace_id:
+            query = query.or_(f"user_id.eq.{user_id},workspace_id.eq.{workspace_id}")
+        else:
+            query = query.eq("user_id", user_id)
+        res = query.order("created_at", desc=True).limit(limit).execute()
         summaries: list[dict[str, Any]] = []
         for row in res.data or []:
             result = row.get("result_json") if isinstance(row.get("result_json"), dict) else None
