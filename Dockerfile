@@ -1,5 +1,6 @@
 # Stage 1: Build MoeidHeidari/guardrail from source
-FROM golang:1.23-alpine AS guardrail-builder
+FROM golang:1.26-alpine AS guardrail-builder
+ENV GOTOOLCHAIN=auto
 RUN apk add --no-cache git
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/MoeidHeidari/guardrail.git .
