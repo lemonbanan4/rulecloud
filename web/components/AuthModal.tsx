@@ -57,7 +57,7 @@ export function AuthModal({
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "github",
-      options: { redirectTo: `${origin}/` },
+      options: { redirectTo: `${origin}/dashboard` },
     });
     if (error) {
       setMessage(error.message);

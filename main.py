@@ -17,7 +17,9 @@ from api_keys import create_api_key_store
 from auth import AuthUser, get_current_user, get_optional_user
 from billing import create_billing_store
 from defaults import DEFAULT_RULES_YAML
-from github_webhook import extract_scan_target, should_trigger_scan, verify_github_signature
+from github_connections import create_github_connection_store
+from github_pr_pipeline import process_github_event
+from github_webhook import resolve_webhook_connection, should_trigger_scan
 from job_store import JobStore, SourceType, create_job_store
 from quota import enforce_workspace_quota, usage_for_workspace
 from scan_auth import ScanCaller, resolve_scan_caller
@@ -51,6 +53,7 @@ app.add_middleware(
 jobs = create_job_store()
 api_key_store = create_api_key_store()
 billing = create_billing_store()
+github_store = create_github_connection_store()
 
 
 async def get_scan_caller(
@@ -117,6 +120,16 @@ class AutofixRequest(BaseModel):
     code: str = Field(min_length=1, max_length=200_000)
     violation: dict[str, Any]
     rules_yaml: str = Field(min_length=1, max_length=100_000)
+
+
+class GitHubConnectRequest(BaseModel):
+    repo_full_name: str = Field(min_length=3, max_length=200, examples=["owner/repo"])
+    github_token: Optional[str] = Field(default=None, max_length=500)
+    auto_fix_comments: bool = True
+
+
+class GitHubAutoFixToggle(BaseModel):
+    auto_fix_comments: bool
 
 
 def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
@@ -284,8 +297,8 @@ def billing_checkout(user: Annotated[AuthUser, Depends(get_current_user)]) -> di
         url = billing.create_checkout_session(
             workspace_id=workspace_id,
             customer_email=user.email,
-            success_url=f"{base}/?billing=success",
-            cancel_url=f"{base}/?billing=canceled",
+            success_url=f"{base}/dashboard/billing?billing=success",
+            cancel_url=f"{base}/dashboard/billing?billing=canceled",
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("checkout session failed")
@@ -308,7 +321,7 @@ def billing_portal(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict
     try:
         url = billing.create_portal_session(
             customer_id=snapshot.stripe_customer_id,
-            return_url=f"{base}/?billing=portal",
+            return_url=f"{base}/dashboard/billing?billing=portal",
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("portal session failed")
@@ -441,6 +454,97 @@ def get_job(
     return record.to_dict()
 
 
+@app.get("/api/integrations/github")
+def list_github_integrations(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not github_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    workspace_id = _workspace_for_user(user)
+    rows = github_store.list_for_workspace(workspace_id, user.user_id)
+    backend = (os.getenv("BACKEND_URL") or "").strip().rstrip("/") or api_public_base()
+    return {
+        "repos": [
+            {
+                "id": r.id,
+                "repo_full_name": r.repo_full_name,
+                "webhook_url": f"{backend}/api/webhook/github",
+                "webhook_secret": r.webhook_secret,
+                "has_token": r.has_token,
+                "auto_fix_comments": r.auto_fix_comments,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ]
+    }
+
+
+def api_public_base() -> str:
+    return (os.getenv("BACKEND_URL") or "http://localhost:8000").strip().rstrip("/")
+
+
+@app.post("/api/integrations/github")
+def connect_github_repo(
+    body: GitHubConnectRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not github_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        return github_store.create(
+            workspace_id=workspace_id,
+            owner_id=user.user_id,
+            repo_full_name=body.repo_full_name,
+            github_token=body.github_token,
+            auto_fix_comments=body.auto_fix_comments,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("connect_github_repo failed")
+        raise HTTPException(status_code=500, detail="Could not save connection") from exc
+
+
+@app.patch("/api/integrations/github/{connection_id}")
+def toggle_github_autofix(
+    connection_id: str,
+    body: GitHubAutoFixToggle,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not github_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    try:
+        ok = github_store.update_auto_fix(
+            connection_id, user.user_id, body.auto_fix_comments
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return {"updated": True, "auto_fix_comments": body.auto_fix_comments}
+
+
+@app.delete("/api/integrations/github/{connection_id}")
+def disconnect_github_repo(
+    connection_id: str,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not github_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    try:
+        ok = github_store.delete(connection_id, user.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return {"disconnected": True}
+
+
 @app.post("/api/webhook/github")
 async def github_webhook(
     request: Request,
@@ -448,45 +552,40 @@ async def github_webhook(
     x_hub_signature_256: Optional[str] = Header(default=None),
     x_github_event: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
-    raw = await request.body()
+    import json
 
-    if not verify_github_signature(raw, x_hub_signature_256, secret):
-        raise HTTPException(status_code=401, detail="Invalid signature")
+    raw = await request.body()
+    fallback = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
     try:
-        payload = await request.json()
+        payload = json.loads(raw.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+
+    repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
+    connections = (
+        github_store.get_connection_for_webhook(repo_full_name) if repo_full_name else []
+    )
+
+    verified, connection = resolve_webhook_connection(
+        raw, x_hub_signature_256, connections, fallback
+    )
+    if not verified:
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
     event_name = x_github_event or "unknown"
     if not should_trigger_scan(event_name, payload):
         return {"accepted": False, "reason": f"ignored event {event_name}"}
 
-    target = extract_scan_target(payload)
-    if not target:
-        raise HTTPException(status_code=422, detail="Could not resolve repository from payload")
-
-    scan_body = ScanRequest(
-        repo_url=target["repo_url"],
-        branch=target.get("branch") or None,
-        rules_yaml=DEFAULT_RULES_YAML,
+    background_tasks.add_task(
+        process_github_event,
+        jobs=jobs,
+        event_name=event_name,
+        payload=payload,
+        connection=connection,
     )
-    meta = {
-        "event": event_name,
-        "repo_url": target["repo_url"],
-        "branch": target.get("branch"),
-        "sha": target.get("sha"),
-        "pr_number": target.get("pr_number"),
-    }
-    caller = ScanCaller(mode="anonymous")
-    job_id = _enqueue_scan(
-        background_tasks,
-        scan_body,
-        caller,
-        webhook_meta=meta,
-        source_type="github_webhook",
+    logger.info(
+        "github_webhook_accepted",
+        extra={"event": event_name, "repo": repo_full_name, "connected": bool(connection)},
     )
-    meta["job_id"] = job_id
-    logger.info("github_webhook_queued", extra={"scan_meta": meta})
-    return {"accepted": True, "job_id": job_id, "scan": meta}
+    return {"accepted": True, "event": event_name, "repo": repo_full_name}

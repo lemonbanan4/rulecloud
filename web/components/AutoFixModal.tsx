@@ -9,6 +9,7 @@ type Props = {
   explanation: string;
   patchedCode: string;
   diff: string;
+  slideOver?: boolean;
 };
 
 export function AutoFixModal({
@@ -18,6 +19,7 @@ export function AutoFixModal({
   explanation,
   patchedCode,
   diff,
+  slideOver = false,
 }: Props) {
   const [copied, setCopied] = useState(false);
 
@@ -33,13 +35,12 @@ export function AutoFixModal({
     }
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+  const panel = (
+      <div
+        className={`flex max-h-[90vh] w-full flex-col overflow-hidden border border-white/[0.08] bg-[#0F0F12] shadow-2xl ${
+          slideOver ? "h-full max-w-xl rounded-none" : "max-w-4xl rounded-2xl"
+        }`}
+      >
         <div className="flex items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
           <div>
             <h3 className="text-lg font-semibold text-slate-50">AI Auto-Fix</h3>
@@ -87,6 +88,24 @@ export function AutoFixModal({
           </div>
         </div>
       </div>
+  );
+
+  if (slideOver) {
+    return (
+      <div className="fixed inset-0 z-50 flex justify-end bg-black/50" role="dialog" aria-modal>
+        <button type="button" className="flex-1" aria-label="Close" onClick={onClose} />
+        {panel}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      {panel}
     </div>
   );
 }

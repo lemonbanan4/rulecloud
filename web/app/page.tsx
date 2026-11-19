@@ -1,833 +1,269 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+import {
+  ArrowDown,
+  ArrowRight,
+  Bot,
+  Cloud,
+  FileCode2,
+  GitBranch,
+  Layers,
+  Shield,
+  Sparkles,
+  Zap,
+} from "lucide-react";
 
-import { ApiKeysCicdPanel } from "@/components/ApiKeysCicdPanel";
-import { AuthNav } from "@/components/AuthNav";
-import { AutoFixModal } from "@/components/AutoFixModal";
-import { BillingActions } from "@/components/BillingActions";
-import { BillingToast } from "@/components/BillingToast";
-import { RecentScans } from "@/components/RecentScans";
-import { UpgradeProModal } from "@/components/UpgradeProModal";
+import { HeroMockup } from "@/components/landing/HeroMockup";
+import { LiveSandbox } from "@/components/landing/LiveSandbox";
 import { useAuth } from "@/contexts/auth-context";
-import { apiBase, apiFetch } from "@/lib/api";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
-/** Used only when GET /api/defaults is unreachable (offline / API down). */
-const FALLBACK_RULES_YAML = `version: 1
-include:
-  - "**/*.cs"
-rules:
-  - id: hardcoded-secret
-    type: regex
-    pattern: "(?i)(password|secret)\\\\s*=\\\\s*\\"[^\\"]+\\""
-    message: Potential hardcoded secret
-`;
+const BENTO = [
+  {
+    icon: Zap,
+    title: "Sub-second Go Engine",
+    body: "MoeidHeidari/guardrail on AST + regex — millisecond feedback on every push.",
+  },
+  {
+    icon: Sparkles,
+    title: "Plain-English → YAML",
+    body: "AI Compiler turns policy intent into valid guardrail.yaml your CLI understands.",
+  },
+  {
+    icon: Bot,
+    title: "One-Click AI Auto-Fix",
+    body: "Pro workspaces get patch + unified diff on every violation card.",
+  },
+  {
+    icon: GitBranch,
+    title: "GitHub Actions & Webhooks",
+    body: "Drop-in workflow YAML and signed webhooks — block merges before drift lands.",
+  },
+  {
+    icon: Layers,
+    title: "Central Audit Logs",
+    body: "Workspace scan history, API keys, and quota in one developer console.",
+  },
+  {
+    icon: FileCode2,
+    title: "Multi-Language",
+    body: "C#, TypeScript, Python, and more via include globs and custom rules.",
+  },
+];
 
-const DEFAULT_SNIPPET = `using System;
-
-namespace RuleCloud.Sample;
-
-public class Example
-{
-    // Trigger regex: hardcoded secret
-    private const string password = "super-secret-demo-key";
-
-    public void Run()
-    {
-        Console.WriteLine("Hello from Example.cs");
-    }
-}
-`;
-
-type InputMode = "repo" | "snippet";
-type DashboardTab = "scan" | "api";
-
-type ScanStatus = "pass" | "violations" | "error" | "idle" | "scanning";
-
-type Finding = {
-  id?: string | null;
-  message?: string | null;
-  severity?: string | null;
-  file?: string | null;
-  line?: number | null;
-  raw?: Record<string, unknown>;
-};
-
-type ScanResult = {
-  status: string;
-  exit_code: number;
-  findings: Finding[];
-  duration_ms: number;
-  stdout: string;
-  stderr: string;
-  error?: string;
-};
-
-type JobRecord = {
-  job_id: string;
-  state: "queued" | "running" | "completed" | "failed";
-  result?: ScanResult | null;
-  error?: string | null;
-};
-
-function formatDuration(ms: number | null | undefined): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
+function scrollToDemo() {
+  document.getElementById("live-demo")?.scrollIntoView({ behavior: "smooth" });
 }
 
-function formatElapsed(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return m > 0 ? `${m}:${s.toString().padStart(2, "0")}` : `${s}s`;
-}
-
-function RulesYamlPanel({
-  expanded,
-  onToggle,
-  value,
-  onChange,
-  compact,
-  aiPrompt,
-  onAiPromptChange,
-  onGenerateYaml,
-  aiGenerating,
-  showAi,
-}: {
-  expanded: boolean;
-  onToggle: () => void;
-  value: string;
-  onChange: (v: string) => void;
-  compact: boolean;
-  aiPrompt: string;
-  onAiPromptChange: (v: string) => void;
-  onGenerateYaml: () => void;
-  aiGenerating: boolean;
-  showAi: boolean;
-}) {
-  return (
-    <div className={compact ? "" : "w-full"}>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between text-left text-sm font-medium text-slate-300"
-      >
-        <span>Rule-set YAML</span>
-        <span className="text-slate-500">{expanded ? "Hide" : "Show"}</span>
-      </button>
-      {expanded && (
-        <>
-          {showAi ? (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                value={aiPrompt}
-                onChange={(e) => onAiPromptChange(e.target.value)}
-                placeholder="Describe a rule in plain English (e.g., block hardcoded API keys in UI components)"
-                className="min-w-0 flex-1 rounded-xl border border-violet-500/20 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-violet-400/40 focus:ring-2 focus:ring-violet-500/15"
-              />
-              <button
-                type="button"
-                disabled={aiGenerating || !aiPrompt.trim()}
-                onClick={() => onGenerateYaml()}
-                className="shrink-0 rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50"
-              >
-                {aiGenerating ? "Generating…" : "Generate YAML"}
-              </button>
-            </div>
-          ) : null}
-          <textarea
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            rows={compact ? 14 : 12}
-            spellCheck={false}
-            className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-xs leading-relaxed text-cyan-50/85 outline-none focus:border-cyan-500/30 focus:ring-2 focus:ring-cyan-500/15"
-          />
-        </>
-      )}
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: ScanStatus }) {
-  const config = useMemo(() => {
-    switch (status) {
-      case "pass":
-        return {
-          label: "PASS",
-          className:
-            "border-emerald-400/50 bg-emerald-500/15 text-emerald-300 badge-glow-pass",
-        };
-      case "violations":
-        return {
-          label: "VIOL",
-          className:
-            "border-amber-400/50 bg-amber-500/15 text-amber-200 badge-glow-violations",
-        };
-      case "scanning":
-        return {
-          label: "SCANNING",
-          className:
-            "border-cyan-400/50 bg-cyan-500/15 text-cyan-200 badge-glow-scanning animate-scan-pulse",
-        };
-      case "error":
-        return {
-          label: "ERROR",
-          className:
-            "border-red-400/50 bg-red-500/15 text-red-200 badge-glow-error",
-        };
-      default:
-        return {
-          label: "READY",
-          className: "border-slate-500/40 bg-slate-800/40 text-slate-400",
-        };
-    }
-  }, [status]);
-
-  return (
-    <span
-      className={`inline-flex max-w-full items-center justify-center truncate rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-wide sm:px-3 sm:py-1 sm:text-xs sm:tracking-widest ${config.className}`}
-    >
-      {config.label}
-    </span>
-  );
-}
-
-export default function Home() {
-  const { accessToken, user } = useAuth();
-  const [mode, setMode] = useState<InputMode>("snippet");
-  const [repoUrl, setRepoUrl] = useState("");
-  const [filename, setFilename] = useState("Example.cs");
-  const [snippet, setSnippet] = useState(DEFAULT_SNIPPET);
-  const [rulesYaml, setRulesYaml] = useState(FALLBACK_RULES_YAML);
-  const [rulesExpanded, setRulesExpanded] = useState(true);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [displayStatus, setDisplayStatus] = useState<ScanStatus>("idle");
-  const [result, setResult] = useState<ScanResult | null>(null);
-  const [jobError, setJobError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const [elapsedSec, setElapsedSec] = useState(0);
-  const [showRaw, setShowRaw] = useState(false);
-  const [recentScansKey, setRecentScansKey] = useState(0);
-  const [dashboardTab, setDashboardTab] = useState<DashboardTab>("scan");
-  const [usagePlan, setUsagePlan] = useState<string>("free");
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [autofixBusy, setAutofixBusy] = useState<number | null>(null);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
-  const [upgradeDetail, setUpgradeDetail] = useState<string | undefined>();
-  const [autofixOpen, setAutofixOpen] = useState(false);
-  const [autofixPayload, setAutofixPayload] = useState<{
-    explanation: string;
-    patchedCode: string;
-    diff: string;
-  } | null>(null);
-
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const scanStartedAt = useRef<number | null>(null);
-
-  const stopTimers = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    if (tickRef.current) {
-      clearInterval(tickRef.current);
-      tickRef.current = null;
-    }
-  }, []);
-
-  const mapJobToUi = useCallback((job: JobRecord) => {
-    if (job.state === "failed") {
-      setDisplayStatus("error");
-      setJobError(job.error || "Job failed");
-      setResult(job.result ?? null);
-      stopTimers();
-      setRecentScansKey((k) => k + 1);
-      return;
-    }
-    if (job.state === "completed" && job.result) {
-      const s = job.result.status;
-      if (s === "pass") setDisplayStatus("pass");
-      else if (s === "violations") setDisplayStatus("violations");
-      else setDisplayStatus("error");
-      setResult(job.result);
-      setJobError(job.result.error ?? null);
-      stopTimers();
-      setRecentScansKey((k) => k + 1);
-      return;
-    }
-    setDisplayStatus("scanning");
-  }, [stopTimers]);
-
-  const loadJobById = useCallback(
-    async (id: string) => {
-      setJobId(id);
-      setSubmitError(null);
-      try {
-        const res = await apiFetch(`/api/jobs/${id}`, {}, accessToken);
-        if (!res.ok) {
-          throw new Error(`Could not load job (${res.status})`);
-        }
-        const job = (await res.json()) as JobRecord;
-        mapJobToUi(job);
-      } catch (err) {
-        setSubmitError(err instanceof Error ? err.message : "Could not load job");
-      }
-    },
-    [accessToken, mapJobToUi],
-  );
-
-  const pollJob = useCallback(
-    async (id: string) => {
-      try {
-        const res = await apiFetch(`/api/jobs/${id}`, {}, accessToken);
-        if (!res.ok) {
-          throw new Error(`Poll failed (${res.status})`);
-        }
-        const job = (await res.json()) as JobRecord;
-        mapJobToUi(job);
-      } catch (err) {
-        setSubmitError(err instanceof Error ? err.message : "Poll failed");
-        setDisplayStatus("error");
-        stopTimers();
-      }
-    },
-    [accessToken, mapJobToUi, stopTimers],
-  );
+export default function HomePage() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
 
   useEffect(() => {
-    return () => stopTimers();
-  }, [stopTimers]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadDefaults = async () => {
-      try {
-        const res = await apiFetch("/api/defaults", {
-          signal: AbortSignal.timeout(8000),
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as { rules_yaml?: string };
-        if (!cancelled && data.rules_yaml?.trim()) {
-          setRulesYaml(data.rules_yaml);
-        }
-      } catch {
-        /* keep FALLBACK_RULES_YAML */
-      }
-    };
-    void loadDefaults();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const billingPlan = user ? usagePlan : "free";
-
-  useEffect(() => {
-    if (!user || !accessToken) {
-      return;
+    if (loading) return;
+    if (user) {
+      router.replace("/dashboard");
     }
-    let cancelled = false;
-    const loadUsage = async () => {
-      try {
-        const res = await apiFetch("/api/usage", {}, accessToken);
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as { plan?: string };
-        if (data.plan) setUsagePlan(data.plan);
-      } catch {
-        /* keep prior plan */
-      }
-    };
-    void loadUsage();
-    return () => {
-      cancelled = true;
-    };
-  }, [user, accessToken]);
+  }, [user, loading, router]);
 
-  const startProCheckout = useCallback(async () => {
-    if (!accessToken) return;
-    const res = await apiFetch("/api/billing/checkout", { method: "POST" }, accessToken);
-    if (!res.ok) {
-      throw new Error(`Checkout failed (${res.status})`);
-    }
-    const data = (await res.json()) as { url?: string };
-    if (data.url) window.location.href = data.url;
-  }, [accessToken]);
+  const consoleHref = isSupabaseConfigured()
+    ? user
+      ? "/dashboard"
+      : "/login?next=/dashboard"
+    : "/dashboard";
 
-  const generateRulesWithAi = useCallback(async () => {
-    if (!accessToken || !aiPrompt.trim()) return;
-    setAiGenerating(true);
-    setAiError(null);
-    try {
-      const res = await apiFetch(
-        "/api/ai/generate-rules",
-        { method: "POST", body: JSON.stringify({ prompt: aiPrompt.trim() }) },
-        accessToken,
-      );
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Generate failed (${res.status})`);
-      }
-      const data = (await res.json()) as { rules_yaml?: string };
-      if (data.rules_yaml) {
-        setRulesYaml(data.rules_yaml);
-        setRulesExpanded(true);
-      }
-    } catch (err) {
-      setAiError(err instanceof Error ? err.message : "Could not generate rules");
-    } finally {
-      setAiGenerating(false);
-    }
-  }, [accessToken, aiPrompt]);
+  const playgroundHref = user ? "/dashboard/playground" : "/dashboard/playground";
+  const signInHref = "/login?next=/dashboard";
 
-  const runAutofix = useCallback(
-    async (finding: Finding, index: number) => {
-      if (!accessToken) return;
-      const sourceCode = mode === "snippet" ? snippet : "";
-      if (!sourceCode.trim()) {
-        setSubmitError("AI Auto-Fix needs snippet mode with source code loaded.");
-        return;
-      }
-      setAutofixBusy(index);
-      setSubmitError(null);
-      try {
-        const res = await apiFetch(
-          "/api/ai/autofix",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              code: sourceCode,
-              violation: finding,
-              rules_yaml: rulesYaml,
-            }),
-          },
-          accessToken,
-        );
-        if (res.status === 402) {
-          const body = (await res.json().catch(() => ({}))) as { detail?: string };
-          setUpgradeDetail(
-            typeof body.detail === "string" ? body.detail : undefined,
-          );
-          setUpgradeOpen(true);
-          return;
-        }
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `Auto-fix failed (${res.status})`);
-        }
-        const data = (await res.json()) as {
-          explanation?: string;
-          patched_code?: string;
-          diff?: string;
-        };
-        setAutofixPayload({
-          explanation: data.explanation || "Suggested fix.",
-          patchedCode: data.patched_code || "",
-          diff: data.diff || "",
-        });
-        setAutofixOpen(true);
-      } catch (err) {
-        setSubmitError(err instanceof Error ? err.message : "Auto-fix failed");
-      } finally {
-        setAutofixBusy(null);
-      }
-    },
-    [accessToken, mode, snippet, rulesYaml],
-  );
-
-  useEffect(() => {
-    if (!jobId || displayStatus !== "scanning") return;
-
-    pollRef.current = setInterval(() => {
-      void pollJob(jobId);
-    }, 3000);
-
-    tickRef.current = setInterval(() => {
-      if (scanStartedAt.current != null) {
-        setElapsedSec(Math.floor((Date.now() - scanStartedAt.current) / 1000));
-      }
-    }, 250);
-
-    const initialPoll = window.setTimeout(() => {
-      void pollJob(jobId);
-    }, 0);
-
-    return () => {
-      window.clearTimeout(initialPoll);
-      stopTimers();
-    };
-  }, [jobId, displayStatus, pollJob, stopTimers]);
-
-  const runScan = async () => {
-    setSubmitError(null);
-    setJobError(null);
-    setResult(null);
-    setJobId(null);
-    setElapsedSec(0);
-    setShowRaw(false);
-    stopTimers();
-
-    const body: Record<string, string> = { rules_yaml: rulesYaml };
-    if (mode === "repo") {
-      const url = repoUrl.trim();
-      if (!url) {
-        setSubmitError("Enter a public GitHub repository URL.");
-        return;
-      }
-      body.repo_url = url;
-    } else {
-      body.code_snippet = snippet;
-      body.filename = filename.trim() || "Example.cs";
-    }
-
-    setIsSubmitting(true);
-    setDisplayStatus("scanning");
-    scanStartedAt.current = Date.now();
-
-    try {
-      const res = await apiFetch(
-        "/api/jobs/scan",
-        { method: "POST", body: JSON.stringify(body) },
-        accessToken,
-      );
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Scan request failed (${res.status})`);
-      }
-      const data = (await res.json()) as { job_id: string };
-      setJobId(data.job_id);
-    } catch (err) {
-      setDisplayStatus("error");
-      setSubmitError(err instanceof Error ? err.message : "Could not start scan");
-      stopTimers();
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const findings = result?.findings ?? [];
-  const violationCount = findings.length;
-
-  return (
-    <div className="min-h-full w-full px-4 py-10 sm:px-6 lg:px-10">
-      <header className="mx-auto mb-10 max-w-6xl">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.35em] text-cyan-400/80">
-              Rule Cloud
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-50 sm:text-4xl">
-              Guardrail static analysis
-            </h1>
-            <p className="mt-2 max-w-xl text-sm text-slate-400">
-              Scan a GitHub repo or a C# snippet with your{" "}
-              <code className="rounded bg-slate-800/80 px-1.5 py-0.5 font-mono text-cyan-300/90">
-                guardrail.yaml
-              </code>{" "}
-              ruleset. Jobs poll every 3s until complete.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            {user ? (
-              <BillingActions accessToken={accessToken} plan={billingPlan} compact />
-            ) : null}
-            <AuthNav />
-            <StatusBadge status={displayStatus} />
-          </div>
-        </div>
-      </header>
-
-      <Suspense fallback={null}>
-        <BillingToast />
-      </Suspense>
-
-      {user ? (
-        <div className="mx-auto mb-6 flex max-w-6xl gap-1 rounded-xl border border-white/10 bg-slate-900/50 p-1">
-          {(
-            [
-              ["scan", "Scan"],
-              ["api", "API Keys & CI/CD"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setDashboardTab(key)}
-              className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
-                dashboardTab === key
-                  ? "bg-cyan-500/20 text-cyan-100"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {dashboardTab === "api" && user ? (
-        <div className="mx-auto max-w-6xl">
-          <ApiKeysCicdPanel />
-        </div>
-      ) : (
-      <div
-        className={`mx-auto grid max-w-6xl gap-6 ${user ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}
-      >
-        <section className="glass-panel flex flex-col rounded-2xl p-5 shadow-xl shadow-black/20 sm:p-6">
-          <div className="mb-5 flex gap-1 rounded-xl border border-white/10 bg-slate-900/50 p-1">
-            {(
-              [
-                ["repo", "GitHub repo"],
-                ["snippet", "Quick snippet"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setMode(key)}
-                className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
-                  mode === key
-                    ? "bg-cyan-500/20 text-cyan-100 shadow-inner shadow-cyan-500/10"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {mode === "repo" ? (
-            <label className="block space-y-2">
-              <span className="text-sm font-medium text-slate-300">
-                Public repository URL
-              </span>
-              <input
-                type="url"
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/owner/repo"
-                className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 font-mono text-sm text-slate-100 outline-none ring-cyan-400/0 transition placeholder:text-slate-600 focus:border-cyan-500/40 focus:ring-2 focus:ring-cyan-500/20"
-              />
-            </label>
-          ) : null}
-
-          <div
-            className={`mt-6 gap-4 ${mode === "snippet" ? "grid xl:grid-cols-2" : "border-t border-white/10 pt-5"}`}
-          >
-            {mode === "snippet" && (
-              <div className="space-y-4">
-                <label className="block space-y-2">
-                  <span className="text-sm font-medium text-slate-300">Filename</span>
-                  <input
-                    type="text"
-                    value={filename}
-                    onChange={(e) => setFilename(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-4 py-2.5 font-mono text-sm text-slate-100 outline-none focus:border-cyan-500/40 focus:ring-2 focus:ring-cyan-500/20"
-                  />
-                </label>
-                <label className="block space-y-2">
-                  <span className="text-sm font-medium text-slate-300">Source code</span>
-                  <textarea
-                    value={snippet}
-                    onChange={(e) => setSnippet(e.target.value)}
-                    rows={14}
-                    spellCheck={false}
-                    className="w-full resize-y rounded-xl border border-white/10 bg-slate-950/70 px-4 py-3 font-mono text-xs leading-relaxed text-emerald-50/90 outline-none focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/15"
-                  />
-                </label>
-              </div>
-            )}
-
-            <RulesYamlPanel
-              expanded={rulesExpanded}
-              onToggle={() => setRulesExpanded((v) => !v)}
-              value={rulesYaml}
-              onChange={setRulesYaml}
-              compact={mode === "snippet"}
-              aiPrompt={aiPrompt}
-              onAiPromptChange={setAiPrompt}
-              onGenerateYaml={() => void generateRulesWithAi()}
-              aiGenerating={aiGenerating}
-              showAi={Boolean(user && accessToken)}
-            />
-          </div>
-
-          {aiError && (
-            <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
-              {aiError}
-            </p>
-          )}
-
-          {submitError && (
-            <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-              {submitError}
-            </p>
-          )}
-
-          <button
-            type="button"
-            onClick={() => void runScan()}
-            disabled={isSubmitting || displayStatus === "scanning"}
-            className="mt-6 w-full rounded-xl bg-gradient-to-r from-cyan-600 to-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition hover:from-cyan-500 hover:to-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {displayStatus === "scanning" ? "Scan in progress…" : "Run Guardrail scan"}
-          </button>
-
-          {displayStatus === "scanning" && (
-            <p className="mt-3 text-center font-mono text-sm text-cyan-300/90">
-              Elapsed {formatElapsed(elapsedSec)}
-              {jobId ? ` · job ${jobId.slice(0, 8)}…` : ""}
-            </p>
-          )}
-        </section>
-
-        <section className="glass-panel flex min-w-0 flex-col overflow-hidden rounded-2xl p-5 shadow-xl shadow-black/20 sm:p-6">
-          <h2 className="text-lg font-semibold text-slate-100">Results</h2>
-
-          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-slate-900/40 p-3">
-              <p className="text-xs uppercase tracking-wider text-slate-500">Status</p>
-              <div className="mt-2 min-w-0">
-                <StatusBadge status={displayStatus} />
-              </div>
-            </div>
-            <div className="rounded-xl border border-white/10 bg-slate-900/40 p-3">
-              <p className="text-xs uppercase tracking-wider text-slate-500">Duration</p>
-              <p className="mt-2 font-mono text-lg text-slate-100">
-                {displayStatus === "scanning"
-                  ? formatElapsed(elapsedSec)
-                  : formatDuration(result?.duration_ms)}
-              </p>
-            </div>
-            <div className="col-span-2 rounded-xl border border-white/10 bg-slate-900/40 p-3 sm:col-span-1">
-              <p className="text-xs uppercase tracking-wider text-slate-500">Findings</p>
-              <p className="mt-2 font-mono text-lg text-slate-100">{violationCount}</p>
-            </div>
-          </div>
-
-          {jobError && (
-            <p className="mt-4 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-              {jobError}
-            </p>
-          )}
-
-          <div>
-            <h3 className="mt-6 text-sm font-medium text-slate-300">
-              Violations
-            </h3>
-            {findings.length === 0 ? (
-              <p className="mt-3 text-sm text-slate-500">
-                {displayStatus === "idle"
-                  ? "Run a scan to see findings."
-                  : displayStatus === "scanning"
-                    ? "Waiting for Guardrail…"
-                    : "No structured findings — check raw output."}
-              </p>
-            ) : (
-              <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
-                {findings.map((f, i) => (
-                  <li
-                    key={`${f.id ?? "finding"}-${i}`}
-                    className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm break-words"
-                  >
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      {f.severity && (
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200/90">
-                          {f.severity}
-                        </span>
-                      )}
-                      {f.file && (
-                        <span className="font-mono text-xs text-cyan-300/80">
-                          {f.file}
-                          {f.line != null ? `:${f.line}` : ""}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 break-words text-slate-300">
-                      {f.message || f.id || "Issue detected"}
-                    </p>
-                    {user && mode === "snippet" ? (
-                      <button
-                        type="button"
-                        disabled={autofixBusy === i}
-                        onClick={() => void runAutofix(f, i)}
-                        className="mt-2 rounded-lg border border-violet-400/30 bg-violet-500/10 px-2 py-1 text-xs font-medium text-violet-200 hover:bg-violet-500/20 disabled:opacity-50"
-                      >
-                        {autofixBusy === i ? "Fixing…" : "AI Auto-Fix"}
-                      </button>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="mt-6 border-t border-white/10 pt-4">
-            <button
-              type="button"
-              onClick={() => setShowRaw((v) => !v)}
-              className="text-sm font-medium text-cyan-400/90 hover:text-cyan-300"
-            >
-              {showRaw ? "Hide" : "Show"} raw CLI output
-            </button>
-            {showRaw && (
-              <pre className="mt-3 max-h-56 overflow-auto rounded-xl border border-white/10 bg-black/50 p-3 font-mono text-[11px] leading-relaxed text-slate-400">
-                  {result?.stdout?.trim() ? (
-                    <>
-                      <span className="text-emerald-500/80"># stdout{"\n"}</span>
-                      {result.stdout}
-                    </>
-                  ) : null}
-                  {result?.stderr?.trim() ? (
-                    <>
-                      {"\n"}
-                      <span className="text-amber-500/80"># stderr{"\n"}</span>
-                      {result.stderr}
-                    </>
-                  ) : null}
-                  {!result?.stdout && !result?.stderr && (
-                    <span className="text-slate-600">No output captured yet.</span>
-                  )}
-              </pre>
-            )}
-          </div>
-        </section>
-
-        <RecentScans
-          refreshKey={recentScansKey}
-          onSelectJob={(id) => void loadJobById(id)}
-        />
+  if (loading || user) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-[#09090B] text-sm text-zinc-500">
+        Loading…
       </div>
-      )}
+    );
+  }
 
-      <p className="mx-auto mt-8 max-w-6xl text-center font-mono text-xs text-slate-600">
-        API {apiBase()}
-      </p>
-
-      <UpgradeProModal
-        open={upgradeOpen}
-        detail={upgradeDetail}
-        onClose={() => setUpgradeOpen(false)}
-        onUpgrade={() => {
-          setUpgradeOpen(false);
-          void startProCheckout().catch((err: unknown) => {
-            setSubmitError(err instanceof Error ? err.message : "Checkout failed");
-          });
+  return (
+    <div className="relative min-h-full bg-[#09090B] text-zinc-100">
+      {/* Spotlight grid */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          backgroundImage: `
+            radial-gradient(ellipse 70% 55% at 50% -10%, rgba(34, 211, 238, 0.12), transparent),
+            linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)
+          `,
+          backgroundSize: "auto, 48px 48px, 48px 48px",
         }}
       />
-      <AutoFixModal
-        open={autofixOpen}
-        onClose={() => setAutofixOpen(false)}
-        originalCode={snippet}
-        explanation={autofixPayload?.explanation || ""}
-        patchedCode={autofixPayload?.patchedCode || ""}
-        diff={autofixPayload?.diff || ""}
-      />
+
+      <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#09090B]/70 backdrop-blur-xl">
+        <nav className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+          <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
+            <Shield className="h-5 w-5" strokeWidth={1.5} />
+            RuleCloud
+          </Link>
+          <div className="hidden items-center gap-6 text-sm text-zinc-400 md:flex">
+            <a href="#features" className="hover:text-zinc-200">
+              Features
+            </a>
+            <Link href="/dashboard/playground" className="hover:text-zinc-200">
+              Playground
+            </Link>
+            <a href="#pricing" className="hover:text-zinc-200">
+              Pricing
+            </a>
+            <Link href="/dashboard/integrations" className="hover:text-zinc-200">
+              Docs
+            </Link>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href={signInHref}
+              className="hidden rounded-lg px-3 py-1.5 text-sm text-zinc-300 hover:text-white sm:inline"
+            >
+              Sign In
+            </Link>
+            <Link
+              href={consoleHref}
+              className="inline-flex items-center gap-1 rounded-lg bg-[#FAFAFA] px-3 py-1.5 text-sm font-semibold text-zinc-900"
+            >
+              Open Console
+              <ArrowRight className="h-3.5 w-3.5" strokeWidth={1.5} />
+            </Link>
+          </div>
+        </nav>
+      </header>
+
+      <main className="relative z-10">
+        <section className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-16 pt-16 sm:px-6 lg:grid-cols-2 lg:pt-24">
+          <div>
+            <p className="inline-flex rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-[11px] font-medium tracking-wide text-cyan-300/90">
+              Powered by Go Guardrail Engine · Sub-second AST & Regex Checks
+            </p>
+            <h1 className="mt-6 text-4xl font-semibold leading-[1.1] tracking-tight text-zinc-50 sm:text-5xl">
+              Architectural Guardrails for AI-Speed Engineering.
+            </h1>
+            <p className="mt-5 max-w-xl text-base leading-relaxed text-zinc-400">
+              Stop Cursor and Copilot drift before it hits <code className="text-zinc-300">main</code>.
+              Enforce custom code rules via cloud API, GitHub Actions, and one-click AI Auto-Fix—zero
+              self-hosting.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href={playgroundHref}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#FAFAFA] px-4 py-2.5 text-sm font-semibold text-zinc-900"
+              >
+                Start Free in Console
+                <ArrowRight className="h-4 w-4" strokeWidth={1.5} />
+              </Link>
+              <button
+                type="button"
+                onClick={scrollToDemo}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/[0.1] px-4 py-2.5 text-sm text-zinc-300 hover:bg-[#18181B]"
+              >
+                Try Live Demo
+                <ArrowDown className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+            </div>
+          </div>
+          <HeroMockup />
+        </section>
+
+        <LiveSandbox />
+
+        <section id="features" className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
+          <h2 className="text-center text-2xl font-semibold text-zinc-50 sm:text-3xl">
+            Built for platform teams shipping with AI
+          </h2>
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {BENTO.map((item) => {
+              const Icon = item.icon;
+              return (
+                <article
+                  key={item.title}
+                  className="rounded-2xl border border-white/[0.08] bg-[#0F0F12] p-5 transition hover:border-white/[0.14] hover:bg-[#18181B]"
+                >
+                  <Icon className="h-5 w-5 text-zinc-400" strokeWidth={1.5} />
+                  <h3 className="mt-3 font-medium text-zinc-100">{item.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-zinc-500">{item.body}</p>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <section id="pricing" className="border-t border-white/[0.06] bg-[#0F0F12]/40 py-20">
+          <div className="mx-auto max-w-6xl px-4 sm:px-6">
+            <h2 className="text-center text-2xl font-semibold text-zinc-50">Transparent pricing</h2>
+            <p className="mx-auto mt-2 max-w-md text-center text-sm text-zinc-500">
+              Start on Free, upgrade when CI volume and AI Auto-Fix matter.
+            </p>
+            <div className="mt-12 grid gap-6 md:grid-cols-2">
+              <article className="rounded-2xl border border-white/[0.08] bg-[#0F0F12] p-6">
+                <p className="text-sm font-medium text-zinc-400">Free</p>
+                <p className="mt-2 text-4xl font-semibold">
+                  $0<span className="text-lg font-normal text-zinc-500">/mo</span>
+                </p>
+                <ul className="mt-6 space-y-2 text-sm text-zinc-400">
+                  <li>50 scans / month</li>
+                  <li>Playground + API keys</li>
+                  <li>AI rule generation (daily cap)</li>
+                </ul>
+                <Link
+                  href={signInHref}
+                  className="mt-8 inline-flex w-full items-center justify-center rounded-lg border border-white/[0.1] py-2.5 text-sm font-medium text-zinc-200 hover:bg-[#18181B]"
+                >
+                  Sign up free
+                </Link>
+              </article>
+              <article className="relative rounded-2xl border border-emerald-500/25 bg-[#0F0F12] p-6 ring-1 ring-emerald-500/10">
+                <p className="text-sm font-medium text-emerald-400">Pro</p>
+                <p className="mt-2 text-4xl font-semibold">
+                  $29<span className="text-lg font-normal text-zinc-500">/mo</span>
+                </p>
+                <ul className="mt-6 space-y-2 text-sm text-zinc-400">
+                  <li>2,000 scans / month</li>
+                  <li>Unlimited AI Auto-Fix diffs</li>
+                  <li>Priority limits + billing portal</li>
+                </ul>
+                <Link
+                  href="/login?next=/dashboard/billing"
+                  className="mt-8 inline-flex w-full items-center justify-center rounded-lg bg-[#FAFAFA] py-2.5 text-sm font-semibold text-zinc-900"
+                >
+                  Upgrade with Stripe
+                </Link>
+              </article>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="relative z-10 border-t border-white/[0.06] py-12">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-4 sm:flex-row sm:px-6">
+          <div className="flex items-center gap-2 text-sm text-zinc-500">
+            <Cloud className="h-4 w-4" strokeWidth={1.5} />
+            RuleCloud · Guardrail as a Service
+          </div>
+          <div className="flex flex-wrap justify-center gap-4 text-sm text-zinc-500">
+            <Link href="/dashboard/integrations" className="hover:text-zinc-300">
+              API docs
+            </Link>
+            <Link href="/dashboard/billing" className="hover:text-zinc-300">
+              Billing
+            </Link>
+            <Link href="/login" className="hover:text-zinc-300">
+              Sign in
+            </Link>
+          </div>
+          <p className="text-xs text-zinc-600">© 2026 RuleCloud</p>
+        </div>
+      </footer>
     </div>
   );
 }

@@ -52,10 +52,29 @@ def extract_scan_target(event: dict[str, Any]) -> Optional[dict[str, str]]:
     return None
 
 
+def resolve_webhook_connection(
+    payload: bytes,
+    signature_header: Optional[str],
+    connections: list[Any],
+    fallback_secret: str,
+) -> tuple[bool, Optional[Any]]:
+    """Return (verified, connection_or_none)."""
+    from github_connections import GitHubConnectionInternal
+
+    for conn in connections:
+        if isinstance(conn, GitHubConnectionInternal) and verify_github_signature(
+            payload, signature_header, conn.webhook_secret
+        ):
+            return True, conn
+    if fallback_secret and verify_github_signature(payload, signature_header, fallback_secret):
+        return True, None
+    return False, None
+
+
 def should_trigger_scan(github_event: str, payload: dict[str, Any]) -> bool:
     if github_event == "pull_request":
         action = payload.get("action", "")
-        return action in ("opened", "synchronize")
+        return action in ("opened", "synchronize", "reopened")
     if github_event == "push":
         return True
     return False

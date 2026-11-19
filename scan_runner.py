@@ -175,6 +175,77 @@ def _write_guard_rules(scan_root: Path, rules_yaml: str) -> None:
     (guard_dir / "quality.yml").write_text(rules_yaml, encoding="utf-8")
 
 
+SUPPORTED_CODE_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".cs",
+        ".go",
+        ".java",
+        ".rb",
+        ".php",
+        ".rs",
+        ".kt",
+    }
+)
+
+
+def run_scan_directory(scan_root: Path, rules_yaml: str) -> ScanResult:
+    """Run guardrail on an existing directory tree."""
+    start = time.perf_counter()
+    try:
+        _write_guard_rules(scan_root, rules_yaml)
+        if not shutil.which(GUARDRAIL_BIN):
+            return ScanResult(
+                status="error",
+                exit_code=-1,
+                error=f"{GUARDRAIL_BIN} not found on PATH",
+                duration_ms=int((time.perf_counter() - start) * 1000),
+            )
+        cmd = _build_guardrail_cmd(scan_root)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(scan_root),
+            capture_output=True,
+            text=True,
+            timeout=GUARDRAIL_TIMEOUT_SEC,
+        )
+        findings = _parse_findings(proc.stdout)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        if proc.returncode == 0:
+            status: ScanStatus = "pass"
+        elif findings or proc.returncode in (1, 2):
+            status = "violations"
+        else:
+            status = "error"
+        return ScanResult(
+            status=status,
+            exit_code=proc.returncode,
+            findings=findings,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            duration_ms=duration_ms,
+        )
+    except subprocess.TimeoutExpired:
+        return ScanResult(
+            status="error",
+            exit_code=-1,
+            error=f"guardrail timed out after {GUARDRAIL_TIMEOUT_SEC}s",
+            duration_ms=int((time.perf_counter() - start) * 1000),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("run_scan_directory failed")
+        return ScanResult(
+            status="error",
+            exit_code=-1,
+            error=str(exc),
+            duration_ms=int((time.perf_counter() - start) * 1000),
+        )
+
+
 def run_scan(
     *,
     repo_url: Optional[str] = None,

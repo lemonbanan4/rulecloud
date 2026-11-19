@@ -115,6 +115,47 @@ def jwt_secret(ref: str) -> str:
     raise SystemExit("Could not load JWT secret from Supabase Management API.")
 
 
+def ensure_github_token_enc_key(env_path: pathlib.Path) -> None:
+    """Keep GITHUB_TOKEN_ENC_KEY on Railway and in local .env (generate once if missing)."""
+    if not RAILWAY.exists():
+        return
+    existing: str | None = None
+    try:
+        data = json.loads(run([str(RAILWAY), "variables", "--json"]))
+        existing = (data.get("GITHUB_TOKEN_ENC_KEY") or "").strip() or None
+    except Exception:
+        pass
+    text = env_path.read_text()
+    local_val: str | None = None
+    for line in text.splitlines():
+        if line.startswith("GITHUB_TOKEN_ENC_KEY="):
+            local_val = line.split("=", 1)[1].strip() or None
+            break
+    key = existing or local_val
+    if not key:
+        import secrets
+
+        key = secrets.token_urlsafe(32)
+        railway_set("GITHUB_TOKEN_ENC_KEY", key)
+    elif not existing and local_val:
+        railway_set("GITHUB_TOKEN_ENC_KEY", local_val)
+    elif existing and existing != local_val:
+        railway_set("GITHUB_TOKEN_ENC_KEY", key)
+    lines: list[str] = []
+    replaced = False
+    for line in text.splitlines():
+        if line.startswith("GITHUB_TOKEN_ENC_KEY="):
+            lines.append(f"GITHUB_TOKEN_ENC_KEY={key}")
+            replaced = True
+        else:
+            lines.append(line)
+    if not replaced:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append(f"GITHUB_TOKEN_ENC_KEY={key}")
+    env_path.write_text("\n".join(lines) + "\n")
+
+
 def merge_github_webhook_secret(env_path: pathlib.Path) -> None:
     if not RAILWAY.exists():
         return
@@ -225,7 +266,9 @@ def main() -> None:
                 "PORT=8000",
                 "LOG_LEVEL=INFO",
                 "FRONTEND_URL=https://rulecloud.vercel.app",
+                "BACKEND_URL=https://rulecloud-production.up.railway.app",
                 "GITHUB_WEBHOOK_SECRET=",
+                "GITHUB_TOKEN_ENC_KEY=",
                 "GUARDRAIL_BIN=guardrail",
                 "GUARDRAIL_TIMEOUT_SEC=60",
                 "GIT_CLONE_TIMEOUT_SEC=30",
@@ -237,6 +280,7 @@ def main() -> None:
         )
     )
     merge_github_webhook_secret(root_env)
+    ensure_github_token_enc_key(root_env)
 
     web_env.write_text(
         "\n".join(
@@ -249,8 +293,14 @@ def main() -> None:
         )
     )
 
+    root_text = root_env.read_text()
     for key in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_JWT_SECRET"):
-        railway_set(key, root_env.read_text().split(f"{key}=")[1].split("\n")[0])
+        railway_set(key, root_text.split(f"{key}=")[1].split("\n")[0])
+
+    railway_set("BACKEND_URL", "https://rulecloud-production.up.railway.app")
+    railway_set("FRONTEND_URL", "https://rulecloud.vercel.app")
+    # Sync encryption key from Railway → local .env and back if needed
+    ensure_github_token_enc_key(root_env)
 
     for line in web_env.read_text().splitlines():
         if line.startswith("NEXT_PUBLIC_") and "=" in line:
