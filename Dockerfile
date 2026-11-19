@@ -12,9 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Official Guardrail CLI (npm). Override GUARDRAIL_INSTALL_CMD to use another distribution.
-ARG GUARDRAIL_INSTALL_CMD="npm install -g guardrail"
-RUN bash -c "${GUARDRAIL_INSTALL_CMD}" && command -v guardrail
+# Static-analysis Guardrail CLI. Override GUARDRAIL_INSTALL_CMD for another distribution.
+ARG GUARDRAIL_INSTALL_CMD="npm install -g @guardrail-ai/cli"
+ENV PATH="/usr/local/bin:${PATH}"
+RUN bash -c "${GUARDRAIL_INSTALL_CMD}" && guardrail --version
 
 WORKDIR /app
 
