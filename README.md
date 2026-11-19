@@ -13,5 +13,3 @@ Monorepo for Guardrail static analysis:
 
 Frontend env on Vercel: `NEXT_PUBLIC_API_URL` → Railway API URL (see `web/.env.example`).
 Railway env: `FRONTEND_URL` → Vercel URL (for CORS).
-
-<!-- RuleCloud GitHub webhook PR test (safe to remove after verifying delivery). -->
