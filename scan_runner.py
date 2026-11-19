@@ -89,6 +89,19 @@ def _parse_findings(stdout: str) -> list[dict[str, Any]]:
     if not isinstance(data, dict):
         return []
 
+    # MoeidHeidari/guardrail: guardrail check --format json
+    files = data.get("files")
+    if isinstance(files, list):
+        flattened: list[dict[str, Any]] = []
+        for file_result in files:
+            if not isinstance(file_result, dict):
+                continue
+            for item in file_result.get("findings") or []:
+                if isinstance(item, dict):
+                    flattened.append(_normalize_finding(item))
+        if flattened:
+            return flattened
+
     for key in ("findings", "violations", "issues", "results", "data"):
         bucket = data.get(key)
         if isinstance(bucket, list):
@@ -105,7 +118,7 @@ def _normalize_finding(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id") or item.get("rule") or item.get("ruleId"),
         "message": item.get("message") or item.get("description") or item.get("title"),
-        "severity": item.get("severity") or item.get("level"),
+        "severity": item.get("severity") or item.get("level") or item.get("kind"),
         "file": item.get("file") or item.get("path") or item.get("filename"),
         "line": item.get("line") or item.get("startLine") or item.get("location", {}).get("line")
         if isinstance(item.get("location"), dict)
@@ -147,18 +160,19 @@ def _git_clone_shallow(repo_url: str, dest: Path, branch: Optional[str] = None) 
     )
 
 
-def _build_guardrail_cmd(workdir: Path) -> list[str]:
+def _build_guardrail_cmd(_workdir: Path) -> list[str]:
+    """MoeidHeidari/guardrail: rules live under .guard/*.yaml; invoke `check`."""
     extra = os.getenv("GUARDRAIL_ARGS", "").strip()
-    cmd = [GUARDRAIL_BIN, "scan", "."]
+    cmd = [GUARDRAIL_BIN, "check", ".", "--format", "json"]
     if extra:
         cmd.extend(extra.split())
-    else:
-        # Common flags across Guardrail CLI distributions
-        cmd.extend(["--json"])
-    config_path = workdir / "guardrail.yaml"
-    if config_path.is_file():
-        cmd.extend(["--config", str(config_path)])
     return cmd
+
+
+def _write_guard_rules(scan_root: Path, rules_yaml: str) -> None:
+    guard_dir = scan_root / ".guard"
+    guard_dir.mkdir(parents=True, exist_ok=True)
+    (guard_dir / "rules.yaml").write_text(rules_yaml, encoding="utf-8")
 
 
 def run_scan(
@@ -213,7 +227,7 @@ def run_scan(
             target_name = filename or DEFAULT_SNIPPET_FILENAME
             (scan_root / target_name).write_text(code_snippet or "", encoding="utf-8")
 
-        (scan_root / "guardrail.yaml").write_text(rules_yaml, encoding="utf-8")
+        _write_guard_rules(scan_root, rules_yaml)
 
         if not shutil.which(GUARDRAIL_BIN):
             return ScanResult(

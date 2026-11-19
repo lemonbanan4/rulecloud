@@ -2,29 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const STARTER_RULES_YAML = `version: "1"
+/** Used only when GET /api/defaults is unreachable (offline / API down). */
+const FALLBACK_RULES_YAML = `version: 1
 include:
-  - "*.cs"
-
-regex_rules:
-  - id: csharp-hardcoded-secret
-    pattern: '(?i)(password|apikey|api_key|secret)\\s*=\\s*"[^"]+"'
-    message: Hardcoded credential in C# — use configuration or a secret store
-    severity: error
-  - id: csharp-empty-catch
-    pattern: 'catch\\s*\\(\\s*Exception\\s*\\)\\s*\\{\\s*\\}'
-    message: Empty catch block swallows errors
-    severity: warning
-
-ast_rules:
-  - id: no-goto
-    languages: [csharp]
-    check: disallow-goto
-    message: Avoid goto in C# — hurts readability
-    severity: warning
-
-output:
-  format: json
+  - "**/*.cs"
+rules:
+  - id: hardcoded-secret
+    type: regex
+    pattern: '(?i)(password|secret)\\s*=\\s*"[^"]+"'
+    message: Potential hardcoded secret
 `;
 
 const DEFAULT_SNIPPET = `using System;
@@ -175,9 +161,8 @@ export default function Home() {
   const [repoUrl, setRepoUrl] = useState("");
   const [filename, setFilename] = useState("Example.cs");
   const [snippet, setSnippet] = useState(DEFAULT_SNIPPET);
-  const [rulesYaml, setRulesYaml] = useState(STARTER_RULES_YAML);
+  const [rulesYaml, setRulesYaml] = useState(FALLBACK_RULES_YAML);
   const [rulesExpanded, setRulesExpanded] = useState(true);
-
   const [jobId, setJobId] = useState<string | null>(null);
   const [displayStatus, setDisplayStatus] = useState<ScanStatus>("idle");
   const [result, setResult] = useState<ScanResult | null>(null);
@@ -247,6 +232,28 @@ export default function Home() {
   }, [stopTimers]);
 
   useEffect(() => {
+    let cancelled = false;
+    const loadDefaults = async () => {
+      try {
+        const res = await fetch(`${apiBase()}/api/defaults`, {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { rules_yaml?: string };
+        if (!cancelled && data.rules_yaml?.trim()) {
+          setRulesYaml(data.rules_yaml);
+        }
+      } catch {
+        /* keep FALLBACK_RULES_YAML */
+      }
+    };
+    void loadDefaults();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!jobId || displayStatus !== "scanning") return;
 
     pollRef.current = setInterval(() => {
@@ -259,9 +266,14 @@ export default function Home() {
       }
     }, 250);
 
-    void pollJob(jobId);
+    const initialPoll = window.setTimeout(() => {
+      void pollJob(jobId);
+    }, 0);
 
-    return () => stopTimers();
+    return () => {
+      window.clearTimeout(initialPoll);
+      stopTimers();
+    };
   }, [jobId, displayStatus, pollJob, stopTimers]);
 
   const runScan = async () => {

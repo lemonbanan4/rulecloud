@@ -29,9 +29,9 @@ app = FastAPI(
     description="Run Guardrail static analysis on repositories and code snippets via HTTP.",
 )
 
-_frontend = os.getenv("FRONTEND_URL", "*")
 _cors_origins = ["http://localhost:3000"]
-if _frontend and _frontend not in _cors_origins:
+_frontend = (os.getenv("FRONTEND_URL") or "").strip()
+if _frontend and _frontend != "*" and _frontend not in _cors_origins:
     _cors_origins.append(_frontend)
 
 app.add_middleware(
@@ -124,6 +124,12 @@ def _enqueue_scan(
     record = jobs.create({k: v for k, v in payload.items() if k != "_webhook_meta"})
     background_tasks.add_task(_run_job, record.job_id, payload, webhook_meta)
     return record.job_id
+
+
+@app.get("/api/defaults")
+def get_defaults() -> dict[str, str]:
+    """Canonical starter guardrail rules YAML for clients."""
+    return {"rules_yaml": DEFAULT_RULES_YAML}
 
 
 @app.get("/health")
