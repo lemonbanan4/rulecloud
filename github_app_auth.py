@@ -23,8 +23,19 @@ def _app_id() -> str:
     return (os.getenv("GITHUB_APP_ID") or "").strip()
 
 
+def _normalize_app_slug(raw: str) -> str:
+    """Slug only (rulecloud-guardrail), not a full github.com/apps/... URL."""
+    slug = raw.strip().rstrip("/")
+    prefix = "https://github.com/apps/"
+    if slug.startswith(prefix):
+        slug = slug[len(prefix) :]
+    if slug.startswith("http://") or slug.startswith("https://"):
+        slug = slug.rsplit("/", 1)[-1]
+    return slug or "rulecloud-guardrail"
+
+
 def _app_slug() -> str:
-    return (os.getenv("GITHUB_APP_SLUG") or "rulecloud-guardrail").strip()
+    return _normalize_app_slug(os.getenv("GITHUB_APP_SLUG") or "rulecloud-guardrail")
 
 
 def _app_private_key() -> str:
