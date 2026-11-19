@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from typing import Any, Optional
 
 import httpx
@@ -12,11 +13,36 @@ logger = logging.getLogger(__name__)
 
 API = "https://api.github.com"
 STATUS_CONTEXT = "RuleCloud Guardrail"
+INLINE_MARKER_PREFIX = "rulecloud-inline:"
+
+
+def inline_comment_marker(rule_id: str) -> str:
+    return f"<!-- {INLINE_MARKER_PREFIX}{rule_id} -->"
+
+
+def parse_inline_markers(
+    comments: list[dict[str, Any]],
+) -> set[tuple[str, int, str]]:
+    """Return set of (path, line, rule_id) from existing review comments."""
+    out: set[tuple[str, int, str]] = set()
+    for comment in comments:
+        body = comment.get("body") or ""
+        path = comment.get("path") or ""
+        line = int(comment.get("line") or comment.get("original_line") or 0)
+        if INLINE_MARKER_PREFIX not in body:
+            continue
+        match = re.search(rf"<!-- {re.escape(INLINE_MARKER_PREFIX)}([^>]+) -->", body)
+        if match and path and line:
+            out.add((path, line, match.group(1).strip()))
+    return out
 
 
 class GitHubClient:
     def __init__(self, token: Optional[str]) -> None:
         self._token = token
+
+    def has_token(self) -> bool:
+        return bool(self._token)
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -163,3 +189,46 @@ class GitHubClient:
             else:
                 url = f"{API}/repos/{owner}/{repo}/issues/{pr_number}/comments"
                 client.post(url, headers=headers, json={"body": body})
+
+    def list_pull_review_comments(
+        self, owner: str, repo: str, pr_number: int
+    ) -> list[dict[str, Any]]:
+        if not self._token:
+            return []
+        url = f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+        with httpx.Client(timeout=60.0) as client:
+            res = client.get(url, headers=self._headers())
+            if res.status_code >= 400:
+                logger.warning("list review comments %s", res.status_code)
+                return []
+            data = res.json()
+            return data if isinstance(data, list) else []
+
+    def create_pull_request_review(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        *,
+        commit_id: str,
+        event: str,
+        comments: list[dict[str, Any]],
+    ) -> None:
+        if not self._token or not comments:
+            return
+        url = f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        body: dict[str, Any] = {
+            "commit_id": commit_id,
+            "event": event,
+            "comments": comments,
+        }
+        with httpx.Client(timeout=60.0) as client:
+            res = client.post(url, headers=self._headers(), json=body)
+            if res.status_code == 422:
+                logger.warning(
+                    "GitHub rejected inline review (422): %s — skipping inline comments",
+                    res.text[:300],
+                )
+                return
+            if res.status_code >= 400:
+                logger.warning("create review failed %s %s", res.status_code, res.text[:200])

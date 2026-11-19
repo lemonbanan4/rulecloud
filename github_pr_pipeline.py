@@ -11,6 +11,7 @@ from typing import Any, Optional
 from ai_copilot import autofix_violation, llm_configured
 from defaults import DEFAULT_RULES_YAML
 from github_api import GitHubClient, STATUS_CONTEXT
+from github_pr_reviews import post_inline_review_comments
 from github_connections import REPORT_MARKER, GitHubConnectionInternal
 from job_store import JobStore
 from quota import enforce_workspace_quota
@@ -245,6 +246,21 @@ def process_pull_request(
 
         body = _build_markdown_report(result, job_id, suggestions)
         gh.upsert_pr_comment(owner, repo_name, pr_number, body, REPORT_MARKER)
+
+        if result.status == "violations" and result.findings:
+            post_inline_review_comments(
+                gh,
+                owner=owner,
+                repo=repo_name,
+                pr_number=pr_number,
+                head_sha=sha,
+                findings=result.findings,
+                pr_files_meta=pr_files,
+                file_contents=file_contents,
+                rules_yaml=rules_yaml,
+                auto_fix=connection.auto_fix_comments,
+                plan_pro=plan == "pro",
+            )
 
         scan_url = _frontend_scans_url(job_id)
         if result.status == "pass":

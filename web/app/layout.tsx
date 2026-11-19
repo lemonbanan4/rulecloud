@@ -15,9 +15,30 @@ const jetbrains = JetBrains_Mono({
   subsets: ["latin"],
 });
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://rulecloud.vercel.app";
+
 export const metadata: Metadata = {
-  title: "RuleCloud — Developer Console",
-  description: "Guardrail static analysis, API keys, billing, and AI copilot",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "RuleCloud — Architectural Guardrails",
+    template: "%s · RuleCloud",
+  },
+  description:
+    "Guardrail static analysis, GitHub PR bot with inline suggestions, API keys, and AI rule generation.",
+  openGraph: {
+    type: "website",
+    url: siteUrl,
+    siteName: "RuleCloud",
+    title: "RuleCloud — Architectural Guardrails for AI-Speed Engineering",
+    description:
+      "Enforce architecture, secrets, and hygiene on every PR. Playground, API, and GitHub integration.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "RuleCloud — Architectural Guardrails",
+    description:
+      "Enforce architecture, secrets, and hygiene on every PR. Playground, API, and GitHub integration.",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

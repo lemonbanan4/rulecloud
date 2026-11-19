@@ -118,7 +118,7 @@ export default function HomePage() {
             <a href="#pricing" className="hover:text-zinc-200">
               Pricing
             </a>
-            <Link href="/dashboard/integrations" className="hover:text-zinc-200">
+            <Link href="/docs" className="hover:text-zinc-200">
               Docs
             </Link>
           </div>

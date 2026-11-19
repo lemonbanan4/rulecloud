@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import os
 
-from github_token_crypto import decrypt_token, encrypt_token
+from github_token_crypto import decrypt_token, encrypt_token, looks_encrypted
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,8 @@ class GitHubConnectionStore:
         token_enc: Optional[str] = None
         if github_token and github_token.strip():
             token_enc = encrypt_token(github_token.strip())
+            if not looks_encrypted(token_enc):
+                raise RuntimeError("GitHub PAT encryption failed — check TOKEN_ENCRYPTION_KEY")
 
         client = self._require()
         existing = (
@@ -203,7 +205,10 @@ class GitHubConnectionStore:
         self._assert_workspace_owner(str(rows[0]["workspace_id"]), owner_id)
         updates: dict[str, Any] = {}
         if github_token is not None and github_token.strip():
-            updates["github_token_encrypted"] = encrypt_token(github_token.strip())
+            enc = encrypt_token(github_token.strip())
+            if not looks_encrypted(enc):
+                raise RuntimeError("GitHub PAT encryption failed — check TOKEN_ENCRYPTION_KEY")
+            updates["github_token_encrypted"] = enc
         if auto_fix_comments is not None:
             updates["auto_fix_comments"] = auto_fix_comments
         if not updates:
