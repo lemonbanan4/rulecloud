@@ -11,6 +11,9 @@ from urllib.parse import parse_qs
 
 logger = logging.getLogger(__name__)
 
+# Repo rule files resolved at PR head (see guardrail_eval.RULES_FILE_CANDIDATES / github_api).
+from guardrail_eval import RULES_FILE_CANDIDATES  # noqa: F401 — re-export for docs/tests
+
 
 def parse_github_webhook_body(raw: bytes, content_type: Optional[str] = None) -> dict[str, Any]:
     """Parse JSON body from GitHub (application/json or x-www-form-urlencoded)."""

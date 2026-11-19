@@ -77,7 +77,9 @@ class GitHubClient:
     def get_rules_yaml_at_ref(self, owner: str, repo: str, ref: str) -> Optional[str]:
         if not self._token:
             return None
-        paths = ("guardrail.yaml", ".guard/general/quality.yml", ".guard/general/quality.yaml")
+        from guardrail_eval import RULES_FILE_CANDIDATES
+
+        paths = RULES_FILE_CANDIDATES
         for path in paths:
             url = f"{API}/repos/{owner}/{repo}/contents/{path}"
             with httpx.Client(timeout=30.0) as client:

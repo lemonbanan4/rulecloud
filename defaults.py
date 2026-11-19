@@ -1,23 +1,32 @@
-"""Default Guardrail rules configuration (.guard/general/quality.yml per scan)."""
+"""Default Guardrail rules (.guard/ + root guardrail.yaml)."""
 
 DEFAULT_RULES_YAML = """\
 version: 1
 timeout_ms: 5000
 include:
-  - "**/*.cs"
-  - "**/*.py"
   - "**/*.ts"
   - "**/*.tsx"
+  - "**/*.py"
   - "**/*.js"
+  - "**/*.cs"
 rules:
   - id: hardcoded-secret
+    severity: high
+    match: "**/*"
     type: regex
-    description: Flags likely hardcoded credentials in source.
-    pattern: '(?i)(password|secret|api_key)\\s*=\\s*"[^"]{8,}"'
-    message: Potential hardcoded secret or credential
-  - id: todo-fixme
+    pattern: '(?i)(api_key|password|secret|token)\\s*=\\s*"[^"]{6,}"'
+    message: Hardcoded credential — use environment variables or a secret manager
+
+  - id: presentation-imports-data
+    severity: medium
+    from: "**/presentation/**"
+    to: "**/data/**"
+    message: Layer violation — presentation must not import the data layer directly
+
+  - id: hygiene-todo
+    severity: low
+    match: "**/*"
     type: regex
-    description: Flags TODO/FIXME markers.
-    pattern: '(?i)\\b(TODO|FIXME|HACK)\\b'
-    message: Unresolved TODO/FIXME marker
+    pattern: '(?i)\\b(TODO|FIXME)\\b'
+    message: Resolve TODO/FIXME before merging
 """

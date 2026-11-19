@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from defaults import DEFAULT_RULES_YAML
+from guardrail_eval import (
+    evaluate_rules_on_tree,
+    parse_rules_document,
+    rules_yaml_for_go_cli,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,7 @@ class ScanResult:
     stderr: str = ""
     duration_ms: int = 0
     error: Optional[str] = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -45,6 +51,7 @@ class ScanResult:
             "duration_ms": self.duration_ms,
             "stdout": self.stdout,
             "stderr": self.stderr,
+            "meta": self.meta,
         }
         if self.error:
             payload["error"] = self.error
@@ -161,7 +168,7 @@ def _git_clone_shallow(repo_url: str, dest: Path, branch: Optional[str] = None) 
 
 
 def _build_guardrail_cmd(_workdir: Path) -> list[str]:
-    """MoeidHeidari/guardrail: rules live under .guard/*.yaml; invoke `check`."""
+    """MoeidHeidari/guardrail: `guardrail check` against `.guard/**/*.yml`."""
     extra = os.getenv("GUARDRAIL_ARGS", "").strip()
     cmd = [GUARDRAIL_BIN, "check", ".", "--format", "json"]
     if extra:
@@ -169,10 +176,192 @@ def _build_guardrail_cmd(_workdir: Path) -> list[str]:
     return cmd
 
 
+def _probe_guardrail_cli() -> dict[str, Any]:
+    """Discover supported guardrail subcommands."""
+    meta: dict[str, Any] = {
+        "binary": GUARDRAIL_BIN,
+        "on_path": bool(shutil.which(GUARDRAIL_BIN)),
+        "subcommands": [],
+        "version_stdout": "",
+        "version_stderr": "",
+        "version_exit_code": None,
+    }
+    if not meta["on_path"]:
+        return meta
+    try:
+        ver = subprocess.run(
+            [GUARDRAIL_BIN, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        meta["version_exit_code"] = ver.returncode
+        meta["version_stdout"] = ver.stdout or ""
+        meta["version_stderr"] = ver.stderr or ""
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        meta["probe_error"] = str(exc)
+        return meta
+    try:
+        help_proc = subprocess.run(
+            [GUARDRAIL_BIN, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        text = (help_proc.stdout or "") + (help_proc.stderr or "")
+        for sub in ("check", "watch", "ci", "scan", "rules"):
+            if sub in text.lower():
+                meta["subcommands"].append(sub)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if "check" not in meta["subcommands"]:
+        meta["subcommands"].append("check")
+    return meta
+
+
 def _write_guard_rules(scan_root: Path, rules_yaml: str) -> None:
+    """Materialize rules for Go CLI (.guard/general) and root guardrail.yaml."""
+    try:
+        data = parse_rules_document(rules_yaml)
+    except Exception:  # noqa: BLE001
+        data = parse_rules_document(DEFAULT_RULES_YAML)
+
     guard_dir = scan_root / ".guard" / "general"
     guard_dir.mkdir(parents=True, exist_ok=True)
-    (guard_dir / "quality.yml").write_text(rules_yaml, encoding="utf-8")
+
+    go_yaml = rules_yaml_for_go_cli(data)
+    if go_yaml:
+        (guard_dir / "quality.yml").write_text(go_yaml, encoding="utf-8")
+    else:
+        (guard_dir / "quality.yml").write_text(rules_yaml, encoding="utf-8")
+
+    (scan_root / "guardrail.yaml").write_text(rules_yaml, encoding="utf-8")
+    (scan_root / ".guardrail.yml").write_text(rules_yaml, encoding="utf-8")
+
+
+def _run_go_guardrail(scan_root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run Go guardrail check when available; return findings + CLI metadata."""
+    cli_meta: dict[str, Any] = {
+        "probe": _probe_guardrail_cli(),
+        "command": None,
+        "exit_code": None,
+        "stdout": "",
+        "stderr": "",
+        "skipped": False,
+        "skip_reason": None,
+        "cli_findings_count": 0,
+        "unrecognized_command": False,
+    }
+    if not cli_meta["probe"].get("on_path"):
+        cli_meta["skipped"] = True
+        cli_meta["skip_reason"] = f"{GUARDRAIL_BIN} not on PATH"
+        return [], cli_meta
+
+    cmd = _build_guardrail_cmd(scan_root)
+    cli_meta["command"] = " ".join(cmd)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(scan_root),
+            capture_output=True,
+            text=True,
+            timeout=GUARDRAIL_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        cli_meta["skipped"] = True
+        cli_meta["skip_reason"] = "CLI timed out"
+        return [], cli_meta
+
+    cli_meta["exit_code"] = proc.returncode
+    cli_meta["stdout"] = proc.stdout or ""
+    cli_meta["stderr"] = proc.stderr or ""
+    stderr_lc = cli_meta["stderr"].lower()
+    if any(
+        phrase in stderr_lc
+        for phrase in ("unknown command", "not defined", "invalid command", "usage:")
+    ) and proc.returncode != 0:
+        cli_meta["unrecognized_command"] = True
+
+    findings = _parse_findings(cli_meta["stdout"])
+    for item in findings:
+        item.setdefault("source", "go")
+    cli_meta["cli_findings_count"] = len(findings)
+    return findings, cli_meta
+
+
+def _merge_findings(
+    python_findings: list[dict[str, Any]],
+    go_findings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int]] = set()
+    for item in python_findings + go_findings:
+        rid = str(item.get("id") or "")
+        file_ = str(item.get("file") or "")
+        line = int(item.get("line") or 0)
+        key = (rid, file_, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _resolve_scan_status(
+    merged: list[dict[str, Any]],
+    cli_meta: dict[str, Any],
+) -> tuple[ScanStatus, Optional[str], int]:
+    """Never report pass when CLI failed without findings and Python found nothing."""
+    exit_code = cli_meta.get("exit_code")
+    if merged:
+        return "violations", None, exit_code if exit_code is not None else 1
+
+    if cli_meta.get("skipped"):
+        reason = cli_meta.get("skip_reason") or "CLI skipped"
+        if f"{GUARDRAIL_BIN} not on PATH" in reason:
+            return "pass", None, 0
+        return "error", reason, -1
+
+    if exit_code == 0:
+        return "pass", None, 0
+
+    if exit_code in (1, 2) and (cli_meta.get("cli_findings_count") or 0) == 0:
+        err = (cli_meta.get("stderr") or "").strip() or "Guardrail CLI reported violations but returned no parseable findings"
+        return "error", err, exit_code or -1
+
+    if cli_meta.get("unrecognized_command"):
+        return "error", "Unrecognized guardrail CLI command", exit_code or -1
+
+    if exit_code not in (0, None):
+        err = (cli_meta.get("stderr") or "Guardrail CLI failed").strip()
+        return "error", err[:500], exit_code or -1
+
+    return "pass", None, exit_code or 0
+
+
+def _run_hybrid_scan(scan_root: Path, rules_yaml: str, start: float) -> ScanResult:
+    _write_guard_rules(scan_root, rules_yaml)
+    python_findings = evaluate_rules_on_tree(scan_root, rules_yaml)
+    go_findings, cli_meta = _run_go_guardrail(scan_root)
+    merged = _merge_findings(python_findings, go_findings)
+    status, error, exit_code = _resolve_scan_status(merged, cli_meta)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    meta = {
+        "cli": cli_meta,
+        "python_findings_count": len(python_findings),
+        "go_findings_count": len(go_findings),
+        "merged_count": len(merged),
+    }
+    return ScanResult(
+        status=status,
+        exit_code=exit_code if exit_code is not None else 0,
+        findings=merged,
+        stdout=cli_meta.get("stdout", ""),
+        stderr=cli_meta.get("stderr", ""),
+        duration_ms=duration_ms,
+        error=error,
+        meta=meta,
+    )
 
 
 SUPPORTED_CODE_EXTENSIONS = frozenset(
@@ -194,41 +383,10 @@ SUPPORTED_CODE_EXTENSIONS = frozenset(
 
 
 def run_scan_directory(scan_root: Path, rules_yaml: str) -> ScanResult:
-    """Run guardrail on an existing directory tree."""
+    """Run hybrid Python + Go guardrail on an existing directory tree."""
     start = time.perf_counter()
     try:
-        _write_guard_rules(scan_root, rules_yaml)
-        if not shutil.which(GUARDRAIL_BIN):
-            return ScanResult(
-                status="error",
-                exit_code=-1,
-                error=f"{GUARDRAIL_BIN} not found on PATH",
-                duration_ms=int((time.perf_counter() - start) * 1000),
-            )
-        cmd = _build_guardrail_cmd(scan_root)
-        proc = subprocess.run(
-            cmd,
-            cwd=str(scan_root),
-            capture_output=True,
-            text=True,
-            timeout=GUARDRAIL_TIMEOUT_SEC,
-        )
-        findings = _parse_findings(proc.stdout)
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        if proc.returncode == 0:
-            status: ScanStatus = "pass"
-        elif findings or proc.returncode in (1, 2):
-            status = "violations"
-        else:
-            status = "error"
-        return ScanResult(
-            status=status,
-            exit_code=proc.returncode,
-            findings=findings,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            duration_ms=duration_ms,
-        )
+        return _run_hybrid_scan(scan_root, rules_yaml, start)
     except subprocess.TimeoutExpired:
         return ScanResult(
             status="error",
@@ -298,25 +456,8 @@ def run_scan(
             target_name = filename or DEFAULT_SNIPPET_FILENAME
             (scan_root / target_name).write_text(code_snippet or "", encoding="utf-8")
 
-        _write_guard_rules(scan_root, rules_yaml)
-
-        if not shutil.which(GUARDRAIL_BIN):
-            return ScanResult(
-                status="error",
-                exit_code=-1,
-                error=f"{GUARDRAIL_BIN} not found on PATH",
-                duration_ms=int((time.perf_counter() - start) * 1000),
-            )
-
-        cmd = _build_guardrail_cmd(scan_root)
         try:
-            proc = subprocess.run(
-                cmd,
-                cwd=str(scan_root),
-                capture_output=True,
-                text=True,
-                timeout=GUARDRAIL_TIMEOUT_SEC,
-            )
+            return _run_hybrid_scan(scan_root, rules_yaml, start)
         except subprocess.TimeoutExpired:
             return ScanResult(
                 status="error",
@@ -324,25 +465,6 @@ def run_scan(
                 error=f"guardrail timed out after {GUARDRAIL_TIMEOUT_SEC}s",
                 duration_ms=int((time.perf_counter() - start) * 1000),
             )
-
-        findings = _parse_findings(proc.stdout)
-        duration_ms = int((time.perf_counter() - start) * 1000)
-
-        if proc.returncode == 0:
-            status: ScanStatus = "pass"
-        elif findings or proc.returncode in (1, 2):
-            status = "violations"
-        else:
-            status = "error"
-
-        return ScanResult(
-            status=status,
-            exit_code=proc.returncode,
-            findings=findings,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            duration_ms=duration_ms,
-        )
     except Exception as exc:  # noqa: BLE001 — surface scan failures to API clients
         logger.exception("scan failed")
         return ScanResult(
