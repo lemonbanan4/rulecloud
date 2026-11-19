@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { KeyRound, Trash2 } from "lucide-react";
+import { Check, Copy, KeyRound, Trash2 } from "lucide-react";
 
 import { useAuth } from "@/contexts/auth-context";
 import { apiFetch } from "@/lib/api";
@@ -17,6 +17,7 @@ export function ApiKeysManager() {
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
 
   const load = useCallback(async () => {
     if (!user || !accessToken) return;
@@ -71,6 +72,17 @@ export function ApiKeysManager() {
     await load();
   };
 
+  const copyNewKey = async () => {
+    if (!newKey) return;
+    try {
+      await navigator.clipboard.writeText(newKey);
+      setCopiedKey(true);
+      window.setTimeout(() => setCopiedKey(false), 2000);
+    } catch {
+      setError("Clipboard copy failed");
+    }
+  };
+
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
@@ -106,7 +118,24 @@ export function ApiKeysManager() {
         {newKey ? (
           <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3">
             <p className="text-sm text-amber-200">Copy this key once — it won’t be shown again.</p>
-            <code className="mt-2 block break-all font-mono text-xs text-emerald-300">{newKey}</code>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <code className="min-w-0 flex-1 break-all rounded-md bg-[#09090B]/80 px-2 py-1.5 font-mono text-xs text-emerald-300">
+                {newKey}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copyNewKey()}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-white/[0.12] bg-[#09090B]/80 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/[0.06]"
+                aria-label="Copy API key"
+              >
+                {copiedKey ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-400" strokeWidth={1.5} />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
+                )}
+                {copiedKey ? "Copied" : "Copy"}
+              </button>
+            </div>
           </div>
         ) : null}
       </ConsoleCard>

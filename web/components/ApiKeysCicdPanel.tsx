@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { Check, Copy } from "lucide-react";
 
 import { BillingActions } from "@/components/BillingActions";
 import { useAuth } from "@/contexts/auth-context";
@@ -243,14 +244,20 @@ jobs:
               Copy this key now — it will not be shown again.
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <code className="break-all rounded-lg bg-black/40 px-2 py-1 font-mono text-xs text-emerald-200">
+              <code className="min-w-0 flex-1 break-all rounded-lg bg-black/40 px-2 py-1 font-mono text-xs text-emerald-200">
                 {newKey}
               </code>
               <button
                 type="button"
                 onClick={() => void copyText(newKey, "key")}
-                className="rounded-lg border border-white/15 px-2 py-1 text-xs text-slate-200 hover:bg-white/5"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-white/15 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/5"
+                aria-label="Copy API key"
               >
+                {copied === "key" ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-400" strokeWidth={1.5} />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
+                )}
                 {copied === "key" ? "Copied" : "Copy"}
               </button>
             </div>
