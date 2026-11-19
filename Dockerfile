@@ -1,10 +1,10 @@
-# Stage 1: Build MoeidHeidari/guardrail from source
-FROM golang:1.26-alpine AS guardrail-builder
-ENV GOTOOLCHAIN=auto
-RUN apk add --no-cache git
+# Stage 1: Build MoeidHeidari/guardrail from source (Tree-sitter requires CGO)
+FROM golang:1.26-bookworm AS guardrail-builder
+ENV GOTOOLCHAIN=auto CGO_ENABLED=1
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/MoeidHeidari/guardrail.git .
-RUN go mod tidy && go build -o /guardrail ./cmd/guardrail || go build -o /guardrail .
+RUN go mod tidy && go build -o /guardrail ./cmd/guardrail
 
 # Stage 2: FastAPI Python runtime
 FROM python:3.11-slim
