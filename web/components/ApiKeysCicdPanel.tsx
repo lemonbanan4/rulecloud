@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
+import { BillingActions } from "@/components/BillingActions";
 import { useAuth } from "@/contexts/auth-context";
 import { apiBase, apiFetch } from "@/lib/api";
 
@@ -185,11 +186,14 @@ jobs:
       <section className="glass-panel rounded-2xl p-5 shadow-xl shadow-black/20 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Workspace usage</h2>
-          {usage && (
-            <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">
-              {usage.plan} plan
-            </span>
-          )}
+          <div className="flex flex-wrap items-center gap-3">
+            {usage && (
+              <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">
+                {usage.plan} plan
+              </span>
+            )}
+            <BillingActions accessToken={accessToken} plan={usage?.plan} />
+          </div>
         </div>
         {loading && !usage ? (
           <p className="mt-4 text-sm text-slate-500">Loading usage…</p>

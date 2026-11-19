@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiKeysCicdPanel } from "@/components/ApiKeysCicdPanel";
 import { AuthNav } from "@/components/AuthNav";
+import { AutoFixModal } from "@/components/AutoFixModal";
+import { BillingActions } from "@/components/BillingActions";
+import { BillingToast } from "@/components/BillingToast";
 import { RecentScans } from "@/components/RecentScans";
+import { UpgradeProModal } from "@/components/UpgradeProModal";
 import { useAuth } from "@/contexts/auth-context";
 import { apiBase, apiFetch } from "@/lib/api";
 
@@ -84,12 +88,22 @@ function RulesYamlPanel({
   value,
   onChange,
   compact,
+  aiPrompt,
+  onAiPromptChange,
+  onGenerateYaml,
+  aiGenerating,
+  showAi,
 }: {
   expanded: boolean;
   onToggle: () => void;
   value: string;
   onChange: (v: string) => void;
   compact: boolean;
+  aiPrompt: string;
+  onAiPromptChange: (v: string) => void;
+  onGenerateYaml: () => void;
+  aiGenerating: boolean;
+  showAi: boolean;
 }) {
   return (
     <div className={compact ? "" : "w-full"}>
@@ -102,13 +116,34 @@ function RulesYamlPanel({
         <span className="text-slate-500">{expanded ? "Hide" : "Show"}</span>
       </button>
       {expanded && (
-        <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={compact ? 14 : 12}
-          spellCheck={false}
-          className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-xs leading-relaxed text-cyan-50/85 outline-none focus:border-cyan-500/30 focus:ring-2 focus:ring-cyan-500/15"
-        />
+        <>
+          {showAi ? (
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={aiPrompt}
+                onChange={(e) => onAiPromptChange(e.target.value)}
+                placeholder="Describe a rule in plain English (e.g., block hardcoded API keys in UI components)"
+                className="min-w-0 flex-1 rounded-xl border border-violet-500/20 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-violet-400/40 focus:ring-2 focus:ring-violet-500/15"
+              />
+              <button
+                type="button"
+                disabled={aiGenerating || !aiPrompt.trim()}
+                onClick={() => onGenerateYaml()}
+                className="shrink-0 rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                {aiGenerating ? "Generating…" : "Generate YAML"}
+              </button>
+            </div>
+          ) : null}
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={compact ? 14 : 12}
+            spellCheck={false}
+            className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 font-mono text-xs leading-relaxed text-cyan-50/85 outline-none focus:border-cyan-500/30 focus:ring-2 focus:ring-cyan-500/15"
+          />
+        </>
       )}
     </div>
   );
@@ -177,6 +212,19 @@ export default function Home() {
   const [showRaw, setShowRaw] = useState(false);
   const [recentScansKey, setRecentScansKey] = useState(0);
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>("scan");
+  const [usagePlan, setUsagePlan] = useState<string>("free");
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [autofixBusy, setAutofixBusy] = useState<number | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [upgradeDetail, setUpgradeDetail] = useState<string | undefined>();
+  const [autofixOpen, setAutofixOpen] = useState(false);
+  const [autofixPayload, setAutofixPayload] = useState<{
+    explanation: string;
+    patchedCode: string;
+    diff: string;
+  } | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -278,6 +326,120 @@ export default function Home() {
     };
   }, []);
 
+  const billingPlan = user ? usagePlan : "free";
+
+  useEffect(() => {
+    if (!user || !accessToken) {
+      return;
+    }
+    let cancelled = false;
+    const loadUsage = async () => {
+      try {
+        const res = await apiFetch("/api/usage", {}, accessToken);
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { plan?: string };
+        if (data.plan) setUsagePlan(data.plan);
+      } catch {
+        /* keep prior plan */
+      }
+    };
+    void loadUsage();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, accessToken]);
+
+  const startProCheckout = useCallback(async () => {
+    if (!accessToken) return;
+    const res = await apiFetch("/api/billing/checkout", { method: "POST" }, accessToken);
+    if (!res.ok) {
+      throw new Error(`Checkout failed (${res.status})`);
+    }
+    const data = (await res.json()) as { url?: string };
+    if (data.url) window.location.href = data.url;
+  }, [accessToken]);
+
+  const generateRulesWithAi = useCallback(async () => {
+    if (!accessToken || !aiPrompt.trim()) return;
+    setAiGenerating(true);
+    setAiError(null);
+    try {
+      const res = await apiFetch(
+        "/api/ai/generate-rules",
+        { method: "POST", body: JSON.stringify({ prompt: aiPrompt.trim() }) },
+        accessToken,
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Generate failed (${res.status})`);
+      }
+      const data = (await res.json()) as { rules_yaml?: string };
+      if (data.rules_yaml) {
+        setRulesYaml(data.rules_yaml);
+        setRulesExpanded(true);
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "Could not generate rules");
+    } finally {
+      setAiGenerating(false);
+    }
+  }, [accessToken, aiPrompt]);
+
+  const runAutofix = useCallback(
+    async (finding: Finding, index: number) => {
+      if (!accessToken) return;
+      const sourceCode = mode === "snippet" ? snippet : "";
+      if (!sourceCode.trim()) {
+        setSubmitError("AI Auto-Fix needs snippet mode with source code loaded.");
+        return;
+      }
+      setAutofixBusy(index);
+      setSubmitError(null);
+      try {
+        const res = await apiFetch(
+          "/api/ai/autofix",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              code: sourceCode,
+              violation: finding,
+              rules_yaml: rulesYaml,
+            }),
+          },
+          accessToken,
+        );
+        if (res.status === 402) {
+          const body = (await res.json().catch(() => ({}))) as { detail?: string };
+          setUpgradeDetail(
+            typeof body.detail === "string" ? body.detail : undefined,
+          );
+          setUpgradeOpen(true);
+          return;
+        }
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `Auto-fix failed (${res.status})`);
+        }
+        const data = (await res.json()) as {
+          explanation?: string;
+          patched_code?: string;
+          diff?: string;
+        };
+        setAutofixPayload({
+          explanation: data.explanation || "Suggested fix.",
+          patchedCode: data.patched_code || "",
+          diff: data.diff || "",
+        });
+        setAutofixOpen(true);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : "Auto-fix failed");
+      } finally {
+        setAutofixBusy(null);
+      }
+    },
+    [accessToken, mode, snippet, rulesYaml],
+  );
+
   useEffect(() => {
     if (!jobId || displayStatus !== "scanning") return;
 
@@ -371,11 +533,18 @@ export default function Home() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-4">
+            {user ? (
+              <BillingActions accessToken={accessToken} plan={billingPlan} compact />
+            ) : null}
             <AuthNav />
             <StatusBadge status={displayStatus} />
           </div>
         </div>
       </header>
+
+      <Suspense fallback={null}>
+        <BillingToast />
+      </Suspense>
 
       {user ? (
         <div className="mx-auto mb-6 flex max-w-6xl gap-1 rounded-xl border border-white/10 bg-slate-900/50 p-1">
@@ -480,8 +649,19 @@ export default function Home() {
               value={rulesYaml}
               onChange={setRulesYaml}
               compact={mode === "snippet"}
+              aiPrompt={aiPrompt}
+              onAiPromptChange={setAiPrompt}
+              onGenerateYaml={() => void generateRulesWithAi()}
+              aiGenerating={aiGenerating}
+              showAi={Boolean(user && accessToken)}
             />
           </div>
+
+          {aiError && (
+            <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+              {aiError}
+            </p>
+          )}
 
           {submitError && (
             <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
@@ -571,6 +751,16 @@ export default function Home() {
                     <p className="mt-1 break-words text-slate-300">
                       {f.message || f.id || "Issue detected"}
                     </p>
+                    {user && mode === "snippet" ? (
+                      <button
+                        type="button"
+                        disabled={autofixBusy === i}
+                        onClick={() => void runAutofix(f, i)}
+                        className="mt-2 rounded-lg border border-violet-400/30 bg-violet-500/10 px-2 py-1 text-xs font-medium text-violet-200 hover:bg-violet-500/20 disabled:opacity-50"
+                      >
+                        {autofixBusy === i ? "Fixing…" : "AI Auto-Fix"}
+                      </button>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -618,6 +808,26 @@ export default function Home() {
       <p className="mx-auto mt-8 max-w-6xl text-center font-mono text-xs text-slate-600">
         API {apiBase()}
       </p>
+
+      <UpgradeProModal
+        open={upgradeOpen}
+        detail={upgradeDetail}
+        onClose={() => setUpgradeOpen(false)}
+        onUpgrade={() => {
+          setUpgradeOpen(false);
+          void startProCheckout().catch((err: unknown) => {
+            setSubmitError(err instanceof Error ? err.message : "Checkout failed");
+          });
+        }}
+      />
+      <AutoFixModal
+        open={autofixOpen}
+        onClose={() => setAutofixOpen(false)}
+        originalCode={snippet}
+        explanation={autofixPayload?.explanation || ""}
+        patchedCode={autofixPayload?.patchedCode || ""}
+        diff={autofixPayload?.diff || ""}
+      />
     </div>
   );
 }

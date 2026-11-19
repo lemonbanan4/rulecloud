@@ -12,8 +12,10 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
+from ai_copilot import AUTOFIX_PRO_DETAIL, autofix_violation, generate_rules_yaml, llm_configured
 from api_keys import create_api_key_store
 from auth import AuthUser, get_current_user, get_optional_user
+from billing import create_billing_store
 from defaults import DEFAULT_RULES_YAML
 from github_webhook import extract_scan_target, should_trigger_scan, verify_github_signature
 from job_store import JobStore, SourceType, create_job_store
@@ -48,6 +50,7 @@ app.add_middleware(
 
 jobs = create_job_store()
 api_key_store = create_api_key_store()
+billing = create_billing_store()
 
 
 async def get_scan_caller(
@@ -104,6 +107,16 @@ class JobCreateResponse(BaseModel):
 
 class CreateKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+
+class GenerateRulesRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=4000)
+
+
+class AutofixRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=200_000)
+    violation: dict[str, Any]
+    rules_yaml: str = Field(min_length=1, max_length=100_000)
 
 
 def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
@@ -195,6 +208,11 @@ def _workspace_for_user(user: AuthUser) -> str:
     return workspace_id
 
 
+def _frontend_base() -> str:
+    base = (os.getenv("FRONTEND_URL") or "http://localhost:3000").strip().rstrip("/")
+    return base
+
+
 @app.get("/api/defaults")
 def get_defaults() -> dict[str, str]:
     """Canonical starter guardrail rules YAML for clients."""
@@ -254,6 +272,115 @@ def list_api_keys(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict[
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"keys": keys}
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict[str, str]:
+    if not billing.stripe_enabled or not billing.supabase_enabled:
+        raise HTTPException(status_code=503, detail="Billing is not configured")
+    workspace_id = _workspace_for_user(user)
+    base = _frontend_base()
+    try:
+        url = billing.create_checkout_session(
+            workspace_id=workspace_id,
+            customer_email=user.email,
+            success_url=f"{base}/?billing=success",
+            cancel_url=f"{base}/?billing=canceled",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("checkout session failed")
+        raise HTTPException(status_code=500, detail="Could not start checkout") from exc
+    return {"url": url}
+
+
+@app.post("/api/billing/portal")
+def billing_portal(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict[str, str]:
+    if not billing.stripe_enabled or not billing.supabase_enabled:
+        raise HTTPException(status_code=503, detail="Billing is not configured")
+    workspace_id = _workspace_for_user(user)
+    snapshot = billing.get_workspace_billing(workspace_id)
+    if not snapshot.stripe_customer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Stripe customer yet. Complete checkout to manage billing.",
+        )
+    base = _frontend_base()
+    try:
+        url = billing.create_portal_session(
+            customer_id=snapshot.stripe_customer_id,
+            return_url=f"{base}/?billing=portal",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("portal session failed")
+        raise HTTPException(status_code=500, detail="Could not open billing portal") from exc
+    return {"url": url}
+
+
+@app.post("/api/webhook/stripe")
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: Annotated[Optional[str], Header(alias="Stripe-Signature")] = None,
+) -> dict[str, bool]:
+    if not billing.stripe_enabled:
+        raise HTTPException(status_code=503, detail="Stripe webhooks not configured")
+    raw = await request.body()
+    try:
+        event = billing.verify_webhook(raw, stripe_signature)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stripe webhook verification failed")
+        raise HTTPException(status_code=400, detail="Invalid webhook") from exc
+    try:
+        billing.handle_webhook_event(event)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stripe webhook handler failed for %s", event.get("type"))
+        raise HTTPException(status_code=500, detail="Webhook handler failed") from exc
+    return {"received": True}
+
+
+@app.post("/api/ai/generate-rules")
+def ai_generate_rules(
+    body: GenerateRulesRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, str]:
+    if not llm_configured():
+        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
+    workspace_id = _workspace_for_user(user)
+    plan = jobs.get_workspace_plan(workspace_id)
+    try:
+        return generate_rules_yaml(
+            body.prompt,
+            workspace_id=workspace_id,
+            plan=plan,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("generate-rules failed")
+        raise HTTPException(status_code=500, detail="Could not generate rules") from exc
+
+
+@app.post("/api/ai/autofix")
+def ai_autofix(
+    body: AutofixRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, str]:
+    if not llm_configured():
+        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
+    workspace_id = _workspace_for_user(user)
+    plan = jobs.get_workspace_plan(workspace_id).strip().lower()
+    if plan != "pro":
+        raise HTTPException(status_code=402, detail=AUTOFIX_PRO_DETAIL)
+    try:
+        return autofix_violation(
+            code=body.code,
+            violation=body.violation,
+            rules_yaml=body.rules_yaml,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("autofix failed")
+        raise HTTPException(status_code=500, detail="Auto-fix failed") from exc
 
 
 @app.delete("/api/keys/{key_id}")
