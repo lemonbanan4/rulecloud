@@ -102,7 +102,7 @@ def _run_job(job_id: str, payload: dict[str, Any], webhook_meta: Optional[dict[s
         scan_payload = {
             k: v
             for k, v in payload.items()
-            if k not in ("_webhook_meta", "_meta")
+            if k not in ("_webhook_meta", "_meta", "workspace_id")
         }
         result = run_scan(**scan_payload)
         result_dict = result.to_dict()
