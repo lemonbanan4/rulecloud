@@ -171,6 +171,7 @@ class _SupabasePersistence:
                         "plan": "free",
                     }
                 )
+                .select("id")
                 .execute()
             )
             rows = res.data or []
@@ -317,6 +318,7 @@ class JobStore:
 
     def ensure_workspace_id(self, user_id: str, *, name: str = "Personal Workspace") -> Optional[str]:
         if not self._db:
+            logger.error("ensure_workspace_id: Supabase persistence not active")
             return None
         try:
             return self._db.ensure_workspace_id(user_id, name=name)

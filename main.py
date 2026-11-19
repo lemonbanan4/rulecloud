@@ -222,7 +222,10 @@ def _workspace_for_user(user: AuthUser) -> str:
     if not workspace_id:
         raise HTTPException(
             status_code=503,
-            detail="Workspace unavailable — check Supabase configuration",
+            detail=(
+                "Workspace unavailable. If you applied migrations manually, "
+                "run supabase/migrations/005_service_role_grants.sql in the SQL Editor."
+            ),
         )
     return workspace_id
 
