@@ -76,6 +76,10 @@ def _build_markdown_report(
 def _materialize_pr_files(
     files_meta: list[dict[str, Any]],
     gh: GitHubClient,
+    *,
+    owner: str,
+    repo: str,
+    ref: str,
 ) -> dict[str, str]:
     out: dict[str, str] = {}
     for item in files_meta:
@@ -88,12 +92,15 @@ def _materialize_pr_files(
         ext = Path(filename).suffix.lower()
         if ext and ext not in SUPPORTED_CODE_EXTENSIONS:
             continue
-        raw_url = item.get("raw_url")
-        if not raw_url:
+        text = gh.get_file_at_ref(owner, repo, filename, ref)
+        if text is None:
+            raw_url = item.get("raw_url")
+            if raw_url:
+                text = gh.fetch_raw_url(raw_url)
+        if text is None or not text.strip():
+            logger.warning("PR file empty or unreadable: %s@%s", filename, ref[:8])
             continue
-        text = gh.fetch_raw_url(raw_url)
-        if text is not None:
-            out[filename] = text
+        out[filename] = text
     return out
 
 
@@ -204,15 +211,18 @@ def process_pull_request(
         )
         job_id = record.job_id
         jobs.mark_running(job_id)
-        file_contents = _materialize_pr_files(pr_files, gh)
+        file_contents = _materialize_pr_files(
+            pr_files, gh, owner=owner, repo=repo_name, ref=sha
+        )
         if not file_contents:
             result = ScanResult(
-                status="pass",
-                exit_code=0,
+                status="error",
+                exit_code=-1,
                 findings=[],
                 duration_ms=0,
                 stdout="",
                 stderr="",
+                error="No PR source files could be loaded (check GitHub token Contents permission).",
             )
         else:
             with tempfile.TemporaryDirectory(prefix="rulecloud-pr-") as tmp:

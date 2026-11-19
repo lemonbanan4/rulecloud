@@ -72,7 +72,36 @@ class GitHubClient:
             res = client.get(raw_url, headers=self._headers())
             if res.status_code >= 400:
                 return None
-            return res.text
+            text = res.text
+            if text is None or not text.strip():
+                return None
+            return text
+
+    def get_file_at_ref(
+        self, owner: str, repo: str, path: str, ref: str
+    ) -> Optional[str]:
+        """Load file bytes via GitHub Contents API (reliable with fine-grained PATs)."""
+        if not self._token:
+            return None
+        path = path.strip().lstrip("/")
+        url = f"{API}/repos/{owner}/{repo}/contents/{path}"
+        with httpx.Client(timeout=60.0) as client:
+            res = client.get(url, headers=self._headers(), params={"ref": ref})
+            if res.status_code != 200:
+                return None
+            payload = res.json()
+            if not isinstance(payload, dict):
+                return None
+            enc = payload.get("content")
+            if not enc:
+                return None
+            try:
+                text = base64.b64decode(enc).decode("utf-8")
+            except Exception:  # noqa: BLE001
+                return None
+            if not text.strip():
+                return None
+            return text
 
     def get_rules_yaml_at_ref(self, owner: str, repo: str, ref: str) -> Optional[str]:
         if not self._token:

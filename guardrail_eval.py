@@ -277,25 +277,20 @@ def _iter_scan_files(scan_root: Path) -> list[tuple[str, Path]]:
     return out
 
 
-def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> list[dict[str, Any]]:
-    """Evaluate rules against all files under scan_root."""
-    try:
-        data = parse_rules_document(rules_yaml)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Python evaluator could not parse rules: %s", exc)
-        return []
-
+def _evaluate_file_map(
+    file_map: dict[str, str],
+    data: dict[str, Any],
+) -> list[dict[str, Any]]:
     include, exclude, rules = _normalize_rules_list(data)
     findings: list[dict[str, Any]] = []
 
-    for relpath, path in _iter_scan_files(scan_root):
+    for relpath, text in file_map.items():
         if exclude and path_matches_any(exclude, relpath):
             continue
         if not path_matches_any(include, relpath):
             continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        if not text.strip():
+            logger.warning("Skipping empty file during eval: %s", relpath)
             continue
         lines = text.splitlines()
 
@@ -313,6 +308,36 @@ def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> list[dict[str, A
                 findings.extend(_eval_regex_rule(rule, relpath, lines, patterns))
 
     return dedupe_findings(findings)
+
+
+def evaluate_rules_on_files(
+    file_map: dict[str, str], rules_yaml: str
+) -> list[dict[str, Any]]:
+    try:
+        data = parse_rules_document(rules_yaml)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Python evaluator could not parse rules: %s", exc)
+        return []
+    return _evaluate_file_map(file_map, data)
+
+
+def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> list[dict[str, Any]]:
+    """Evaluate rules against all files under scan_root."""
+    try:
+        data = parse_rules_document(rules_yaml)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Python evaluator could not parse rules: %s", exc)
+        return []
+
+    file_map: dict[str, str] = {}
+    for relpath, path in _iter_scan_files(scan_root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if text.strip():
+            file_map[relpath] = text
+    return _evaluate_file_map(file_map, data)
 
 
 def rules_yaml_for_go_cli(data: dict[str, Any]) -> str:
