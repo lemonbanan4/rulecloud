@@ -19,7 +19,11 @@ from billing import create_billing_store
 from defaults import DEFAULT_RULES_YAML
 from github_connections import create_github_connection_store
 from github_pr_pipeline import process_github_event
-from github_webhook import resolve_webhook_connection, should_trigger_scan
+from github_webhook import (
+    parse_github_webhook_body,
+    resolve_webhook_connection,
+    should_trigger_scan,
+)
 from job_store import JobStore, SourceType, create_job_store
 from quota import enforce_workspace_quota, usage_for_workspace
 from scan_auth import ScanCaller, resolve_scan_caller
@@ -561,15 +565,21 @@ async def github_webhook(
     x_hub_signature_256: Optional[str] = Header(default=None),
     x_github_event: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    import json
-
     raw = await request.body()
     fallback = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        payload = parse_github_webhook_body(
+            raw, request.headers.get("content-type")
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid GitHub webhook payload — set Content type to "
+                "application/json, or send JSON in payload= for form encoding."
+            ),
+        ) from exc
 
     repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
     connections = (

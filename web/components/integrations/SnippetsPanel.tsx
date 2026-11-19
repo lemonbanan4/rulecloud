@@ -55,11 +55,15 @@ jobs:
     {
       key: "webhook",
       step: "2",
-      title: "GitHub Webhook",
-      body: `URL: ${apiUrl}/api/webhook/github
+      title: "GitHub Webhook (PR bot tab)",
+      body: `Use the GitHub PR Bot tab: connect the repo, then copy URL + Secret from the table.
+
+URL: ${apiUrl}/api/webhook/github
 Content type: application/json
-Secret: same as GITHUB_WEBHOOK_SECRET on RuleCloud API
-Events: Pull requests, Pushes (configurable)`,
+Secret: per-repo secret from Connected repositories (not the Railway env unless you skipped connect)
+Events: Pull requests (required). Push optional.
+
+Step 1 (Actions) and Step 2 (Webhook) are different paths — pick one or use both.`,
     },
     {
       key: "curl",
