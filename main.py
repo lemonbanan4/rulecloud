@@ -43,7 +43,11 @@ billing = create_billing_store()
 github_store = create_github_connection_store()
 
 _mcp_server = create_mcp_server(jobs=jobs, api_keys=api_key_store)
-_mcp_asgi = _mcp_server.http_app(path="/", transport="streamable-http")
+_mcp_asgi = _mcp_server.http_app(
+    path="/",
+    transport="streamable-http",
+    stateless_http=True,
+)
 
 
 @asynccontextmanager

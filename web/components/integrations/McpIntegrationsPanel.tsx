@@ -8,7 +8,7 @@ import { apiBase } from "@/lib/api";
 
 export function McpIntegrationsPanel() {
   const [copied, setCopied] = useState<string | null>(null);
-  const mcpUrl = `${apiBase()}/mcp`;
+  const mcpUrl = `${apiBase().replace(/\/$/, "")}/mcp/`;
 
   const cursorMcp = useMemo(
     () =>
@@ -95,7 +95,8 @@ Before you mark a coding task complete or open a pull request:
         </div>
         <p className="mt-2 text-sm text-zinc-500">
           Connect your IDE agent to{" "}
-          <code className="text-zinc-300">{mcpUrl}</code> with an API key. Tools:{" "}
+          <code className="text-zinc-300">{mcpUrl}</code> (trailing slash required) with an
+          API key. Do not open this URL in a browser — use an MCP client only. Tools:{" "}
           <code className="text-zinc-300">scan_code</code>,{" "}
           <code className="text-zinc-300">get_default_rules</code>,{" "}
           <code className="text-zinc-300">generate_guardrail_rules</code>,{" "}

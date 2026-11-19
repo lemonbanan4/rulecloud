@@ -143,12 +143,13 @@ export default function DocsPage() {
             <code className="text-zinc-300">Authorization: Bearer rc_live_…</code>.
           </p>
           <p className="mt-1 text-xs text-zinc-600">
-            URL: <code className="text-cyan-400">{apiUrl}/mcp</code>
+            URL: <code className="text-cyan-400">{apiUrl}/mcp/</code> (trailing slash; MCP client
+            only — not a browser tab)
           </p>
           <CodeBlock>{`{
   "mcpServers": {
     "rulecloud": {
-      "url": "${apiUrl}/mcp",
+      "url": "${apiUrl}/mcp/",
       "headers": { "X-API-Key": "rc_live_YOUR_KEY" }
     }
   }
