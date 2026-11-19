@@ -34,6 +34,8 @@ export function sourceLabel(source?: string | null): string {
       return "API";
     case "github_webhook":
       return "GitHub";
+    case "mcp":
+      return "MCP";
     default:
       return source || "API";
   }

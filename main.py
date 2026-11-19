@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Annotated, Any, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
@@ -25,6 +26,7 @@ from github_webhook import (
     should_trigger_scan,
 )
 from job_store import JobStore, SourceType, create_job_store
+from mcp_server import create_mcp_server
 from quota import enforce_workspace_quota, usage_for_workspace
 from scan_auth import ScanCaller, resolve_scan_caller
 from scan_runner import guardrail_available, run_scan
@@ -35,10 +37,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+jobs = create_job_store()
+api_key_store = create_api_key_store()
+billing = create_billing_store()
+github_store = create_github_connection_store()
+
+_mcp_server = create_mcp_server(jobs=jobs, api_keys=api_key_store)
+_mcp_asgi = _mcp_server.http_app(path="/", transport="streamable-http")
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    async with _mcp_asgi.lifespan(app):
+        yield
+
+
 app = FastAPI(
     title="Rulecloud Guardrail API",
     version="1.0.0",
     description="Run Guardrail static analysis on repositories and code snippets via HTTP.",
+    lifespan=_app_lifespan,
 )
 
 _cors_origins = ["http://localhost:3000"]
@@ -53,11 +71,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-jobs = create_job_store()
-api_key_store = create_api_key_store()
-billing = create_billing_store()
-github_store = create_github_connection_store()
 
 
 async def get_scan_caller(
@@ -626,3 +639,6 @@ async def github_webhook(
         extra={"event": event_name, "repo": repo_full_name, "connected": bool(connection)},
     )
     return {"accepted": True, "event": event_name, "repo": repo_full_name}
+
+
+app.mount("/mcp", _mcp_asgi)

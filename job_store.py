@@ -13,7 +13,7 @@ from typing import Any, Literal, Optional
 logger = logging.getLogger(__name__)
 
 JobState = Literal["queued", "running", "completed", "failed"]
-SourceType = Literal["snippet", "github_webhook", "api"]
+SourceType = Literal["snippet", "github_webhook", "api", "mcp"]
 
 
 def _now_iso() -> str:

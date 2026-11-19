@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Shield, Copy, GitBranch, Key, Webhook } from "lucide-react";
+import { Shield, Copy, GitBranch, Key, Webhook, Bot } from "lucide-react";
 
 import { apiBase } from "@/lib/api";
 
@@ -80,6 +80,12 @@ export default function DocsPage() {
             </li>
             <li>
               <Link href="/dashboard/integrations" className="text-cyan-400 hover:underline">
+                Integrations → AI IDE / MCP
+              </Link>
+              — paste Streamable HTTP config into Cursor, Claude Code, or VS Code.
+            </li>
+            <li>
+              <Link href="/dashboard/integrations" className="text-cyan-400 hover:underline">
                 Integrations → GitHub PR Bot
               </Link>
               — connect repo, copy webhook secret, add GitHub webhook (
@@ -124,6 +130,46 @@ export default function DocsPage() {
             <code>.guard/general/quality.yml</code>.
           </p>
           <CodeBlock>{GUARDRAIL_EXAMPLE}</CodeBlock>
+        </section>
+
+        <section className="mt-12">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Bot className="h-5 w-5" strokeWidth={1.5} />
+            MCP (AI agents)
+          </h2>
+          <p className="mt-2 text-sm text-zinc-500">
+            Streamable HTTP endpoint for Cursor, Claude Code, and VS Code. Authenticate with{" "}
+            <code className="text-zinc-300">X-API-Key: rc_live_…</code> or{" "}
+            <code className="text-zinc-300">Authorization: Bearer rc_live_…</code>.
+          </p>
+          <p className="mt-1 text-xs text-zinc-600">
+            URL: <code className="text-cyan-400">{apiUrl}/mcp</code>
+          </p>
+          <CodeBlock>{`{
+  "mcpServers": {
+    "rulecloud": {
+      "url": "${apiUrl}/mcp",
+      "headers": { "X-API-Key": "rc_live_YOUR_KEY" }
+    }
+  }
+}`}</CodeBlock>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-zinc-400">
+            <li>
+              <code className="text-zinc-300">scan_code</code> — inline scan (counts toward monthly
+              quota, persisted as <code className="text-zinc-300">mcp</code> jobs)
+            </li>
+            <li>
+              <code className="text-zinc-300">get_default_rules</code> — canonical{" "}
+              <code className="text-zinc-300">guardrail.yaml</code>
+            </li>
+            <li>
+              <code className="text-zinc-300">generate_guardrail_rules</code> — natural language →
+              YAML
+            </li>
+            <li>
+              <code className="text-zinc-300">suggest_fix</code> — Pro AI patch for a violation
+            </li>
+          </ul>
         </section>
 
         <section className="mt-12">
