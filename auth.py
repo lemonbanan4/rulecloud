@@ -120,3 +120,10 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
+
+
+def user_from_authorization(authorization: Optional[str]) -> Optional[AuthUser]:
+    token = _parse_bearer_token(authorization)
+    if not token:
+        return None
+    return _decode_supabase_jwt(token)

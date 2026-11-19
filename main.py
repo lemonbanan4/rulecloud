@@ -12,10 +12,13 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
+from api_keys import create_api_key_store
 from auth import AuthUser, get_current_user, get_optional_user
 from defaults import DEFAULT_RULES_YAML
 from github_webhook import extract_scan_target, should_trigger_scan, verify_github_signature
 from job_store import JobStore, SourceType, create_job_store
+from quota import enforce_workspace_quota, usage_for_workspace
+from scan_auth import ScanCaller, resolve_scan_caller
 from scan_runner import guardrail_available, run_scan
 
 logging.basicConfig(
@@ -44,6 +47,17 @@ app.add_middleware(
 )
 
 jobs = create_job_store()
+api_key_store = create_api_key_store()
+
+
+async def get_scan_caller(
+    request: Request,
+    authorization: Annotated[Optional[str], Header()] = None,
+    x_api_key: Annotated[Optional[str], Header(alias="X-API-Key")] = None,
+) -> ScanCaller:
+    return await resolve_scan_caller(
+        request, jobs, api_key_store, authorization, x_api_key
+    )
 
 
 class ScanRequest(BaseModel):
@@ -88,12 +102,29 @@ class JobCreateResponse(BaseModel):
     state: str
 
 
+class CreateKeyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
 def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
     if webhook:
         return "github_webhook"
     if body.code_snippet:
         return "snippet"
     return "api"
+
+
+def _resolve_workspace(caller: ScanCaller, body: ScanRequest) -> tuple[Optional[str], Optional[AuthUser]]:
+    user = caller.user
+    workspace_id = caller.workspace_id or body.workspace_id
+    if user and not workspace_id:
+        workspace_id = jobs.resolve_workspace_id(user.user_id)
+    return workspace_id, user
+
+
+def _guard_quota(workspace_id: Optional[str]) -> None:
+    if workspace_id:
+        enforce_workspace_quota(jobs, workspace_id)
 
 
 def _run_job(job_id: str, payload: dict[str, Any], webhook_meta: Optional[dict[str, Any]] = None) -> None:
@@ -130,20 +161,20 @@ def _run_job(job_id: str, payload: dict[str, Any], webhook_meta: Optional[dict[s
 def _enqueue_scan(
     background_tasks: BackgroundTasks,
     body: ScanRequest,
+    caller: ScanCaller,
     *,
-    user: Optional[AuthUser] = None,
     webhook_meta: Optional[dict[str, Any]] = None,
     source_type: Optional[SourceType] = None,
 ) -> str:
+    workspace_id, user = _resolve_workspace(caller, body)
+    _guard_quota(workspace_id)
+
     payload = body.model_dump()
     if webhook_meta:
         payload["_webhook_meta"] = webhook_meta
 
     inferred = source_type or _infer_source_type(body, webhook=bool(webhook_meta))
     user_id = user.user_id if user else None
-    workspace_id = body.workspace_id
-    if user_id and not workspace_id:
-        workspace_id = jobs.resolve_workspace_id(user_id)
 
     store_request = {k: v for k, v in payload.items() if k != "_webhook_meta"}
     record = jobs.create(
@@ -155,6 +186,13 @@ def _enqueue_scan(
     )
     background_tasks.add_task(_run_job, record.job_id, payload, webhook_meta)
     return record.job_id
+
+
+def _workspace_for_user(user: AuthUser) -> str:
+    workspace_id = jobs.resolve_workspace_id(user.user_id)
+    if not workspace_id:
+        raise HTTPException(status_code=404, detail="No workspace found for user")
+    return workspace_id
 
 
 @app.get("/api/defaults")
@@ -173,12 +211,74 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/usage")
+def get_usage(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict[str, Any]:
+    workspace_id = _workspace_for_user(user)
+    snapshot = usage_for_workspace(jobs, workspace_id)
+    return {
+        "plan": snapshot.plan,
+        "used": snapshot.used,
+        "limit": snapshot.limit,
+    }
+
+
+@app.post("/api/keys")
+def create_api_key(
+    body: CreateKeyRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not api_key_store.enabled:
+        raise HTTPException(status_code=503, detail="API keys not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        created = api_key_store.create_key(
+            workspace_id=workspace_id,
+            name=body.name,
+            owner_id=user.user_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("create_api_key failed")
+        raise HTTPException(status_code=500, detail="Could not create API key") from exc
+    return created
+
+
+@app.get("/api/keys")
+def list_api_keys(user: Annotated[AuthUser, Depends(get_current_user)]) -> dict[str, Any]:
+    if not api_key_store.enabled:
+        raise HTTPException(status_code=503, detail="API keys not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        keys = api_key_store.list_keys(workspace_id=workspace_id, owner_id=user.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"keys": keys}
+
+
+@app.delete("/api/keys/{key_id}")
+def revoke_api_key(
+    key_id: str,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not api_key_store.enabled:
+        raise HTTPException(status_code=503, detail="API keys not configured")
+    try:
+        ok = api_key_store.revoke_key(key_id=key_id, owner_id=user.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"revoked": True}
+
+
 @app.post("/api/scan", response_model=ScanResponse)
 def scan_sync(
     body: ScanRequest,
-    user: Annotated[Optional[AuthUser], Depends(get_optional_user)] = None,
+    caller: Annotated[ScanCaller, Depends(get_scan_caller)],
 ) -> ScanResponse:
-    _ = user
+    workspace_id, _ = _resolve_workspace(caller, body)
+    _guard_quota(workspace_id)
     result = run_scan(**body.model_dump(exclude={"workspace_id"}))
     return ScanResponse(**result.to_dict())
 
@@ -187,9 +287,9 @@ def scan_sync(
 def scan_async(
     body: ScanRequest,
     background_tasks: BackgroundTasks,
-    user: Annotated[Optional[AuthUser], Depends(get_optional_user)] = None,
+    caller: Annotated[ScanCaller, Depends(get_scan_caller)],
 ) -> JobCreateResponse:
-    job_id = _enqueue_scan(background_tasks, body, user=user)
+    job_id = _enqueue_scan(background_tasks, body, caller)
     return JobCreateResponse(job_id=job_id, state="queued")
 
 
@@ -252,9 +352,11 @@ async def github_webhook(
         "sha": target.get("sha"),
         "pr_number": target.get("pr_number"),
     }
+    caller = ScanCaller(mode="anonymous")
     job_id = _enqueue_scan(
         background_tasks,
         scan_body,
+        caller,
         webhook_meta=meta,
         source_type="github_webhook",
     )

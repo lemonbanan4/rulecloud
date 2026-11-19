@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ApiKeysCicdPanel } from "@/components/ApiKeysCicdPanel";
 import { AuthNav } from "@/components/AuthNav";
 import { RecentScans } from "@/components/RecentScans";
 import { useAuth } from "@/contexts/auth-context";
@@ -35,6 +36,7 @@ public class Example
 `;
 
 type InputMode = "repo" | "snippet";
+type DashboardTab = "scan" | "api";
 
 type ScanStatus = "pass" | "violations" | "error" | "idle" | "scanning";
 
@@ -174,6 +176,7 @@ export default function Home() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [showRaw, setShowRaw] = useState(false);
   const [recentScansKey, setRecentScansKey] = useState(0);
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>("scan");
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -374,6 +377,35 @@ export default function Home() {
         </div>
       </header>
 
+      {user ? (
+        <div className="mx-auto mb-6 flex max-w-6xl gap-1 rounded-xl border border-white/10 bg-slate-900/50 p-1">
+          {(
+            [
+              ["scan", "Scan"],
+              ["api", "API Keys & CI/CD"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setDashboardTab(key)}
+              className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                dashboardTab === key
+                  ? "bg-cyan-500/20 text-cyan-100"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {dashboardTab === "api" && user ? (
+        <div className="mx-auto max-w-6xl">
+          <ApiKeysCicdPanel />
+        </div>
+      ) : (
       <div
         className={`mx-auto grid max-w-6xl gap-6 ${user ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}
       >
@@ -581,6 +613,7 @@ export default function Home() {
           onSelectJob={(id) => void loadJobById(id)}
         />
       </div>
+      )}
 
       <p className="mx-auto mt-8 max-w-6xl text-center font-mono text-xs text-slate-600">
         API {apiBase()}

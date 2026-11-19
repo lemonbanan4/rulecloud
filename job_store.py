@@ -20,6 +20,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _month_bounds_utc() -> tuple[str, str]:
+    now = datetime.now(timezone.utc)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if now.month == 12:
+        end = start.replace(year=now.year + 1, month=1)
+    else:
+        end = start.replace(month=now.month + 1)
+    return start.isoformat(), end.isoformat()
+
+
 @dataclass
 class JobRecord:
     job_id: str
@@ -147,6 +157,32 @@ class _SupabasePersistence:
             return None
         return str(rows[0]["id"])
 
+    def get_workspace_plan(self, workspace_id: str) -> str:
+        res = (
+            self._client.table("workspaces")
+            .select("plan")
+            .eq("id", workspace_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return "free"
+        plan = rows[0].get("plan") or "free"
+        return str(plan)
+
+    def count_workspace_scans_month(self, workspace_id: str) -> int:
+        start, end = _month_bounds_utc()
+        res = (
+            self._client.table("scan_jobs")
+            .select("id", count="exact")
+            .eq("workspace_id", workspace_id)
+            .gte("created_at", start)
+            .lt("created_at", end)
+            .execute()
+        )
+        return int(res.count or 0)
+
 
 def _row_to_record(row: dict[str, Any]) -> JobRecord:
     result = row.get("result_json")
@@ -255,6 +291,34 @@ class JobStore:
         except Exception:  # noqa: BLE001
             logger.exception("Failed to resolve workspace for user %s", user_id)
             return None
+
+    def get_workspace_plan(self, workspace_id: Optional[str]) -> str:
+        if not workspace_id:
+            return "free"
+        if not self._db:
+            return "free"
+        try:
+            return self._db.get_workspace_plan(workspace_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to get plan for workspace %s", workspace_id)
+            return "free"
+
+    def count_workspace_scans_month(self, workspace_id: str) -> int:
+        if self._db:
+            try:
+                return self._db.count_workspace_scans_month(workspace_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to count monthly scans for %s", workspace_id)
+        start, end = _month_bounds_utc()
+        with self._lock:
+            count = 0
+            for job in self._jobs.values():
+                if job.workspace_id != workspace_id:
+                    continue
+                created = job.created_at
+                if start <= created < end:
+                    count += 1
+            return count
 
     def list_for_user(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         if not self._db:
