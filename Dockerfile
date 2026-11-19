@@ -1,29 +1,22 @@
+# Stage 1: Build MoeidHeidari/guardrail from source
+FROM golang:1.23-alpine AS guardrail-builder
+RUN apk add --no-cache git
+WORKDIR /src
+RUN git clone --depth 1 https://github.com/MoeidHeidari/guardrail.git .
+RUN go mod tidy && go build -o /guardrail ./cmd/guardrail || go build -o /guardrail .
+
+# Stage 2: FastAPI Python runtime
 FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PORT=8000
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    curl \
-    ca-certificates \
-    nodejs \
-    npm \
-    && rm -rf /var/lib/apt/lists/*
-
-# Static-analysis Guardrail CLI. Override GUARDRAIL_INSTALL_CMD for another distribution.
-ARG GUARDRAIL_INSTALL_CMD="npm install -g @guardrail-ai/cli"
-ENV PATH="/usr/local/bin:${PATH}"
-RUN bash -c "${GUARDRAIL_INSTALL_CMD}" && guardrail --version
+# Copy compiled guardrail binary into PATH
+COPY --from=guardrail-builder /guardrail /usr/local/bin/guardrail
+RUN chmod +x /usr/local/bin/guardrail
 
 WORKDIR /app
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
 
 EXPOSE 8000
-
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
