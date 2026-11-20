@@ -13,6 +13,7 @@ import {
 import { useAuth } from "@/contexts/auth-context";
 import { useUsage } from "@/hooks/use-usage";
 import { apiBase, apiFetch } from "@/lib/api";
+import { parseGithubInstallationId } from "@/lib/parse-github-installation-id";
 
 const API_WEBHOOK = `${apiBase()}/api/webhook/github`;
 
@@ -24,6 +25,12 @@ type RepoRow = {
   has_token: boolean;
   auto_fix_comments: boolean;
   created_at?: string;
+};
+
+type UnlinkedInstallRow = {
+  installation_id: number;
+  account_login: string;
+  account_type: string;
 };
 
 type AppInstallationRow = {
@@ -52,6 +59,7 @@ export function GitHubIntegrationsPanel({
   const isPro = (usage?.plan || "free").toLowerCase() === "pro";
   const [repos, setRepos] = useState<RepoRow[]>([]);
   const [appInstallations, setAppInstallations] = useState<AppInstallationRow[]>([]);
+  const [unlinkedOnGitHub, setUnlinkedOnGitHub] = useState<UnlinkedInstallRow[]>([]);
   const [appConfigured, setAppConfigured] = useState(false);
   const [githubApiError, setGithubApiError] = useState<string | null>(null);
   const [installUrl, setInstallUrl] = useState<string | null>(null);
@@ -66,6 +74,8 @@ export function GitHubIntegrationsPanel({
   const [copied, setCopied] = useState<string | null>(null);
   const [linkingApp, setLinkingApp] = useState(false);
   const [manualInstallationId, setManualInstallationId] = useState("");
+  const [serverCheckLoading, setServerCheckLoading] = useState(false);
+  const [serverCheckMessage, setServerCheckMessage] = useState<string | null>(null);
   const linkedFromQueryRef = useRef<string | null>(null);
 
   const webhookUrl =
@@ -99,7 +109,23 @@ export function GitHubIntegrationsPanel({
           installations?: AppInstallationRow[];
         };
         setAppConfigured(Boolean(data.configured));
-        setAppInstallations(data.installations ?? []);
+        const linked = data.installations ?? [];
+        setAppInstallations(linked);
+        if (linked.length === 0 && Boolean(data.configured)) {
+          const uRes = await apiFetch(
+            "/api/integrations/github-app/unlinked",
+            {},
+            accessToken,
+          );
+          if (uRes.ok) {
+            const uData = (await uRes.json()) as { installations?: UnlinkedInstallRow[] };
+            setUnlinkedOnGitHub(uData.installations ?? []);
+          } else {
+            setUnlinkedOnGitHub([]);
+          }
+        } else {
+          setUnlinkedOnGitHub([]);
+        }
       } else if (listRes.status >= 400) {
         const text = await listRes.text();
         let msg = `Could not load installations (${listRes.status})`;
@@ -139,6 +165,44 @@ export function GitHubIntegrationsPanel({
     }, 0);
     return () => window.clearTimeout(t);
   }, [load]);
+
+  const runServerGitHubCheck = useCallback(async () => {
+    if (!accessToken) {
+      setServerCheckMessage("Sign in to RuleCloud first — the check uses your session, not a manual API key.");
+      return;
+    }
+    setServerCheckLoading(true);
+    setServerCheckMessage(null);
+    try {
+      const res = await apiFetch("/api/integrations/github-app/status", {}, accessToken);
+      const text = await res.text();
+      if (res.ok) {
+        const data = JSON.parse(text) as { ok?: boolean; app_slug?: string; app_name?: string };
+        setServerCheckMessage(
+          data.ok
+            ? `GitHub App OK — ${data.app_name ?? "app"} (${data.app_slug ?? "slug"})`
+            : text,
+        );
+        return;
+      }
+      let msg = text;
+      try {
+        const j = JSON.parse(text) as { detail?: string };
+        if (typeof j.detail === "string") msg = j.detail;
+      } catch {
+        /* keep raw */
+      }
+      setServerCheckMessage(
+        res.status === 503
+          ? `Server GitHub App misconfigured: ${msg}`
+          : `Check failed (${res.status}): ${msg}`,
+      );
+    } catch (err) {
+      setServerCheckMessage(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      setServerCheckLoading(false);
+    }
+  }, [accessToken]);
 
   const linkInstallation = useCallback(
     async (installationId: number) => {
@@ -321,8 +385,31 @@ export function GitHubIntegrationsPanel({
         <h2 className="text-sm font-semibold text-zinc-100">Install RuleCloud GitHub App</h2>
         <p className="mt-2 text-sm text-zinc-500">
           One-click install — no PAT or manual webhook. PR scans, statuses, and inline comments use
-          short-lived installation tokens.
+          short-lived installation tokens. Click <strong className="text-zinc-300">Install</strong>{" "}
+          below, finish on GitHub, then GitHub sends you back here and linking runs automatically
+          (Setup URL + <span className="text-zinc-400">installation_id</span> in the URL). If you
+          already installed earlier, use <strong className="text-zinc-300">Configure → Save</strong>{" "}
+          on GitHub with <strong className="text-zinc-300">Redirect on update</strong> enabled.
         </p>
+        <button
+          type="button"
+          disabled={serverCheckLoading || authLoading || !accessToken}
+          onClick={() => void runServerGitHubCheck()}
+          className="mt-3 rounded-lg border border-white/[0.1] px-3 py-2 text-xs font-medium text-zinc-200 hover:bg-white/[0.04] disabled:opacity-50"
+        >
+          {serverCheckLoading ? "Testing…" : "Test GitHub App on server"}
+        </button>
+        {serverCheckMessage ? (
+          <p
+            className={`mt-2 rounded-lg border px-3 py-2 text-xs ${
+              serverCheckMessage.startsWith("GitHub App OK")
+                ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-100"
+                : "border-amber-500/25 bg-amber-500/10 text-amber-100"
+            }`}
+          >
+            {serverCheckMessage}
+          </p>
+        ) : null}
         {githubApiError ? (
           <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
             GitHub App API check failed: {githubApiError}
@@ -347,7 +434,28 @@ export function GitHubIntegrationsPanel({
             <code className="text-zinc-400">https://rulecloud.vercel.app/dashboard/integrations</code>
             .
           </p>
-        ) : appInstallations.length === 0 ? (
+        ) : null}
+        {unlinkedOnGitHub.length > 0 && appInstallations.length === 0 ? (
+          <div className="mt-4 space-y-2 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
+            <p className="text-xs text-cyan-100">Found on GitHub but not linked to this workspace:</p>
+            {unlinkedOnGitHub.map((row) => (
+              <button
+                key={row.installation_id}
+                type="button"
+                disabled={linkingApp}
+                onClick={() => void linkInstallation(row.installation_id)}
+                className="flex w-full items-center justify-between rounded-lg border border-white/[0.08] bg-[#09090B] px-3 py-2 text-left text-xs text-zinc-200 hover:bg-white/[0.03]"
+              >
+                <span className="font-mono">
+                  {row.account_login}{" "}
+                  <span className="text-zinc-500">({row.account_type})</span>
+                </span>
+                <span className="text-cyan-400">Link now</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {appInstallations.length === 0 ? (
           <div className="mt-4 space-y-3 rounded-lg border border-white/[0.06] bg-black/20 p-3">
             <p className="text-xs text-zinc-500">
               Installed on GitHub but not listed here? GitHub must redirect back with{" "}
@@ -367,14 +475,19 @@ export function GitHubIntegrationsPanel({
               className="flex flex-wrap gap-2"
               onSubmit={(e) => {
                 e.preventDefault();
-                const id = Number.parseInt(manualInstallationId.trim(), 10);
-                if (Number.isFinite(id) && id > 0) void linkInstallation(id);
+                const id = parseGithubInstallationId(manualInstallationId);
+                if (id === null) {
+                  setError(
+                    "Use the numeric ID or paste the full URL, e.g. https://github.com/settings/installations/183840442",
+                  );
+                  return;
+                }
+                void linkInstallation(id);
               }}
             >
               <input
                 type="text"
-                inputMode="numeric"
-                placeholder="Installation ID (from GitHub URL)"
+                placeholder="183840442 or full GitHub settings URL"
                 value={manualInstallationId}
                 onChange={(e) => setManualInstallationId(e.target.value)}
                 className="min-w-[12rem] flex-1 rounded-lg border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-xs"

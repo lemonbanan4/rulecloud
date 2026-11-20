@@ -23,6 +23,7 @@ from github_app_auth import (
     get_installation,
     github_app_configured,
     install_url_for_workspace,
+    list_app_installations,
     list_installation_repos,
 )
 from github_connections import create_github_connection_store
@@ -680,6 +681,39 @@ def github_app_install_url(
     }
 
 
+@app.get("/api/integrations/github-app/unlinked")
+def list_unlinked_github_installations(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Installations on GitHub not yet linked to any RuleCloud workspace."""
+    del user
+    if not github_app_configured():
+        raise HTTPException(status_code=503, detail="GitHub App is not configured on the server")
+    if not github_app_store.enabled:
+        raise HTTPException(status_code=503, detail="GitHub integrations not configured")
+    try:
+        remote = list_app_installations()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    unlinked: list[dict[str, Any]] = []
+    for item in remote:
+        raw_id = item.get("id")
+        if raw_id is None:
+            continue
+        installation_id = int(raw_id)
+        if github_app_store.get_by_installation_id(installation_id):
+            continue
+        account = item.get("account") or {}
+        unlinked.append(
+            {
+                "installation_id": installation_id,
+                "account_login": str(account.get("login") or "unknown"),
+                "account_type": str(account.get("type") or "User"),
+            }
+        )
+    return {"installations": unlinked}
+
+
 @app.get("/api/integrations/github-app/status")
 def github_app_status(
     user: Annotated[AuthUser, Depends(get_current_user)],
@@ -736,6 +770,15 @@ def github_app_callback(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.exception("upsert installation %s", body.installation_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("upsert installation %s", body.installation_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not save installation: {type(exc).__name__}: {exc}",
+        ) from exc
     github_app_store.clear_link_intent(workspace_id)
     try:
         repos = list_installation_repos(body.installation_id)

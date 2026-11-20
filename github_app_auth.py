@@ -214,6 +214,30 @@ def list_installation_repos(installation_id: int) -> list[dict[str, Any]]:
     return repos
 
 
+def list_app_installations() -> list[dict[str, Any]]:
+    """All installations of this GitHub App (server credentials only)."""
+    app_jwt = generate_app_jwt()
+    out: list[dict[str, Any]] = []
+    page = 1
+    with httpx.Client(timeout=45.0) as client:
+        while True:
+            res = client.get(
+                f"{GITHUB_API}/app/installations",
+                params={"per_page": 100, "page": page},
+                headers=github_app_headers(app_jwt),
+            )
+            if res.status_code >= 400:
+                raise RuntimeError(safe_http_error_message(res))
+            batch = res.json()
+            if not isinstance(batch, list):
+                break
+            out.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+    return out
+
+
 def install_url_for_workspace(workspace_id: str) -> Optional[str]:
     if not github_app_configured():
         return None
