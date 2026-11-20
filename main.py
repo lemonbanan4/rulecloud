@@ -528,12 +528,16 @@ def ai_generate_rules(
 @app.post("/api/ai/autofix")
 def ai_autofix(
     body: AutofixRequest,
-    user: Annotated[AuthUser, Depends(get_current_user)],
+    caller: Annotated[ScanCaller, Depends(get_scan_caller)],
 ) -> dict[str, str]:
-    workspace_id = _workspace_for_user(user)
+    if caller.mode == "anonymous":
+        raise HTTPException(status_code=401, detail="API key or sign-in required")
+    workspace_id = caller.workspace_id
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="Workspace not resolved")
     if not llm_configured(workspace_id):
         raise HTTPException(status_code=503, detail="AI Copilot is not configured")
-    plan = jobs.get_workspace_plan(workspace_id).strip().lower()
+    plan = (caller.plan or jobs.get_workspace_plan(workspace_id)).strip().lower()
     if plan != "pro":
         raise HTTPException(status_code=402, detail=AUTOFIX_PRO_DETAIL)
     try:

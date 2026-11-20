@@ -1,6 +1,10 @@
 import yaml from "js-yaml";
 import path from "node:path";
 
+import { shouldEvaluateSourceFile } from "./exclusions.js";
+import { expandExtensionIncludes, matchAny } from "./glob.js";
+import { hasBlocking } from "./severity.js";
+
 export type Finding = {
   id: string;
   message: string;
@@ -19,32 +23,14 @@ const SKIP_DIRS = new Set([
   "build",
   "target",
   "__pycache__",
+  ".cursor",
 ]);
 
-type RuleDoc = {
+export type RuleDoc = {
   include: string[];
   exclude: string[];
   rules: Record<string, unknown>[];
 };
-
-function globMatch(pattern: string, relpath: string): boolean {
-  const norm = relpath.replace(/\\/g, "/").replace(/^\.\//, "");
-  const p = pattern.replace(/\\/g, "/");
-  const esc = p
-    .replace(/\*\*\//g, "(?:.*/)?")
-    .replace(/\*\*/g, ".*")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, "[^/]");
-  try {
-    return new RegExp(`^${esc}$`, "i").test(norm);
-  } catch {
-    return norm.includes(p);
-  }
-}
-
-function matchAny(patterns: string[], relpath: string): boolean {
-  return patterns.some((p) => globMatch(p, relpath));
-}
 
 function rulePatterns(rule: Record<string, unknown>, include: string[]): string[] {
   for (const key of ["match", "include", "files"]) {
@@ -55,18 +41,16 @@ function rulePatterns(rule: Record<string, unknown>, include: string[]): string[
   return include;
 }
 
-function severityRank(sev: string): number {
-  const s = sev.toLowerCase();
-  if (s.includes("crit") || s === "high" || s.includes("error")) return 2;
-  if (s.includes("warn") || s === "medium") return 1;
-  return 0;
-}
-
 export function parseRulesYaml(text: string): RuleDoc {
   const data = yaml.load(text) as Record<string, unknown>;
   const include = Array.isArray(data?.include)
     ? data.include.map(String)
     : ["**/*"];
+  const extFromKey = expandExtensionIncludes(data?.extensions);
+  const extFromInclude = expandExtensionIncludes(data?.["include.extensions"]);
+  for (const g of [...extFromKey, ...extFromInclude]) {
+    if (!include.includes(g)) include.push(g);
+  }
   const exclude = Array.isArray(data?.exclude) ? data.exclude.map(String) : [];
   const rules = Array.isArray(data?.rules)
     ? (data.rules as Record<string, unknown>[]).filter((r) => r?.id)
@@ -83,9 +67,15 @@ function evalRegex(
   if (!matchAny(patterns, relpath)) return [];
   const raw = (rule.pattern || rule.regex) as string | undefined;
   if (!raw) return [];
+  let pat = String(raw);
+  let flags = "";
+  if (pat.startsWith("(?i)")) {
+    pat = pat.slice(4);
+    flags = "i";
+  }
   let rx: RegExp;
   try {
-    rx = new RegExp(String(raw));
+    rx = new RegExp(pat, flags);
   } catch {
     return [];
   }
@@ -109,7 +99,7 @@ function evalLayer(
   const from = rule.from as string | undefined;
   const to = rule.to as string | undefined;
   if (!from || !to) return [];
-  if (!globMatch(from, relpath)) return [];
+  if (!matchAny([from], relpath)) return [];
   const rid = String(rule.id);
   const msg = String(rule.message || "Forbidden layer dependency");
   const sev = String(rule.severity || "medium");
@@ -120,7 +110,13 @@ function evalLayer(
     const line = lines[i];
     if (!importRe.test(line)) continue;
     const ln = line.replace(/\\/g, "/");
-    if (ln.includes(toNorm) || /\/data\//.test(toNorm) && /['"].*(\.\.\/data\/|\/data\/)/.test(ln)) {
+    const dataLayer =
+      /\/data\//.test(toNorm) &&
+      /(?:from|import)\s+['"][^'"]*(\.\.\/)+data\/|(?:from|import)\s+['"][^'"]*\/data\//.test(
+        ln,
+      );
+    const segment = toNorm.replace(/\*\*/g, "").replace(/^\/+/, "");
+    if (dataLayer || (segment && ln.includes(segment))) {
       out.push({ id: rid, message: msg, file: relpath, line: i + 1, severity: sev });
     }
   }
@@ -153,6 +149,7 @@ export function evaluateFile(
   content: string,
   doc: RuleDoc,
 ): Finding[] {
+  if (!shouldEvaluateSourceFile(relpath, doc.rules)) return [];
   if (doc.exclude.length && matchAny(doc.exclude, relpath)) return [];
   if (!matchAny(doc.include, relpath)) return [];
   if (!content.trim()) return [];
@@ -178,11 +175,10 @@ export function evaluateFile(
 
 export function shouldIgnorePath(absPath: string, root: string): boolean {
   const rel = path.relative(root, absPath);
+  if (!rel || rel === ".") return false;
   if (rel.startsWith("..")) return true;
   const parts = rel.split(path.sep);
   return parts.some((p) => SKIP_DIRS.has(p));
 }
 
-export function hasCritical(findings: Finding[]): boolean {
-  return findings.some((f) => severityRank(f.severity) >= 2);
-}
+export { hasBlocking as hasCritical, hasBlocking };

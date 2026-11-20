@@ -31,6 +31,21 @@ export async function runInit(cwd: string, cfg: CliConfig): Promise<void> {
   writeFileSync(guardrailPath, bundle.rules_yaml, "utf8");
   console.log(`Wrote ${guardrailPath} (etag: ${bundle.etag})`);
 
+  const rcPath = path.join(cwd, ".rulecloud.json");
+  writeFileSync(
+    rcPath,
+    JSON.stringify(
+      {
+        apiUrl: cfg.apiUrl,
+        apiKey: cfg.apiKey,
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+  console.log(`Wrote ${rcPath} (Cloud Sync enabled for watch)`);
+
   const cursorDir = path.join(cwd, ".cursor");
   mkdirSync(cursorDir, { recursive: true });
   mkdirSync(path.join(cursorDir, "rules"), { recursive: true });

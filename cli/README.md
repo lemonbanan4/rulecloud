@@ -4,18 +4,19 @@ Real-time guardrails for AI coding agents. Pulls **Cloud Rulespacks** from your 
 
 ## Install
 
-From this directory:
+```bash
+npm install -g rulecloud
+# or run without installing:
+npx rulecloud init
+npx rulecloud watch
+```
+
+Develop from the monorepo `cli/` folder:
 
 ```bash
 npm install
 npm run build
 npm link
-```
-
-Or run once without linking:
-
-```bash
-npx rulecloud init
 ```
 
 ## Configure
@@ -32,8 +33,10 @@ Create API keys in the [RuleCloud console](https://rulecloud.vercel.app/dashboar
 | Command | Description |
 |---------|-------------|
 | `rulecloud init` | Download merged `.guardrail.yml`, wire `.cursor/mcp.json` + agent rule |
-| `rulecloud watch` | Debounced file watcher with colorized `[BLOCKED]` alerts |
-| `rulecloud watch --cloud` | Also POST events to `/api/watch/events` (default when API key set) |
+| `rulecloud watch` | Live HUD: initial scan + file saves (`r` rescan, `c` clear, `q` quit) |
+| `rulecloud watch --plain` | No colors / no TTY shortcuts (CI) |
+| `rulecloud watch` | Cloud Sync **ON** automatically when `RULECLOUD_API_KEY` or `.rulecloud.json` is set |
+| `rulecloud fix [file]` | Pro AI Auto-Fix via API (`f` in watch) |
 | `rulecloud check` | Scan entire repo; exit `1` on high/critical violations |
 | `rulecloud check --staged` | Pre-commit scan of staged git files only |
 

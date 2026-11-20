@@ -1,33 +1,15 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import pc from "picocolors";
 
-import { evaluateFile, hasCritical, parseRulesYaml, shouldIgnorePath } from "../eval.js";
-
-function loadRules(cwd: string): string {
-  for (const name of [".guardrail.yml", "guardrail.yaml", "guardrail.yml"]) {
-    try {
-      return readFileSync(path.join(cwd, name), "utf8");
-    } catch {
-      /* next */
-    }
-  }
-  throw new Error("No .guardrail.yml — run rulecloud init first");
-}
-
-function walkFiles(root: string, base = root): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(root)) {
-    const abs = path.join(root, name);
-    if (shouldIgnorePath(abs, base)) continue;
-    const st = statSync(abs);
-    if (st.isDirectory()) out.push(...walkFiles(abs, base));
-    else if (st.isFile()) out.push(abs);
-  }
-  return out;
-}
+import { evaluateFile, type Finding } from "../eval.js";
+import { hasBlocking } from "../severity.js";
+import { printFinding, printRulesWarning } from "../hud.js";
+import { loadRulesFromRepo } from "../rules-config.js";
+import { shouldIgnorePath } from "../eval.js";
+import { walkSourceFiles } from "../walk.js";
 
 function stagedFiles(cwd: string): string[] | null {
   const r = spawnSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR"], {
@@ -42,15 +24,23 @@ function stagedFiles(cwd: string): string[] | null {
     .map((rel) => path.join(cwd, rel));
 }
 
-export function runCheck(cwd: string, staged: boolean): number {
-  const doc = parseRulesYaml(loadRules(cwd));
-  const files = staged ? stagedFiles(cwd) : walkFiles(cwd);
+export function runCheck(cwd: string, staged: boolean, plain = false): number {
+  const loaded = loadRulesFromRepo(cwd);
+  console.log(
+    plain
+      ? `Loaded ${loaded.configLabel} — ${loaded.ruleCount} rules`
+      : pc.cyan(`Loaded ${loaded.configLabel} — ${loaded.ruleCount} rules`),
+  );
+  if (loaded.warnReason) printRulesWarning(loaded.warnReason, plain);
+
+  const doc = loaded.doc;
+  const files = staged ? stagedFiles(cwd) : walkSourceFiles(cwd);
   if (staged && files === null) {
-    console.error(pc.red("git not available or not a repo — scanning full tree"));
-    return runCheck(cwd, false);
+    console.error(pc.red("git not available — scanning full tree"));
+    return runCheck(cwd, false, plain);
   }
-  const targets = files ?? walkFiles(cwd);
-  const all = [];
+  const targets = files ?? walkSourceFiles(cwd);
+  const all: Finding[] = [];
   for (const abs of targets) {
     if (shouldIgnorePath(abs, cwd)) continue;
     const rel = path.relative(cwd, abs).replace(/\\/g, "/");
@@ -62,14 +52,17 @@ export function runCheck(cwd: string, staged: boolean): number {
     }
     all.push(...evaluateFile(rel, content, doc));
   }
-  if (all.length === 0) {
-    console.log(pc.green("✓ No violations"));
+  const unique = all.filter((f, i, arr) => {
+    const k = `${f.id}:${f.file}:${f.line}`;
+    return arr.findIndex((x) => `${x.id}:${x.file}:${x.line}` === k) === i;
+  });
+  if (unique.length === 0) {
+    console.log(plain ? "PASS (0)" : pc.green("✓ PASS (0)"));
     return 0;
   }
-  for (const f of all) {
-    const tag = hasCritical([f]) ? pc.red("[BLOCKED]") : pc.yellow("[WARN]");
-    console.log(`${tag} ${f.file}:${f.line} — ${f.id} ${f.message}`);
+  for (const f of unique) {
+    printFinding(f, plain);
   }
-  console.log(pc.dim(`\n${all.length} finding(s)`));
-  return hasCritical(all) ? 1 : 0;
+  console.log(plain ? `\n${unique.length} finding(s)` : pc.dim(`\n${unique.length} finding(s)`));
+  return hasBlocking(unique) ? 1 : 0;
 }

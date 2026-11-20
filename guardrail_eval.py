@@ -32,6 +32,41 @@ RULECLOUD_IGNORE_RE = re.compile(
 )
 
 
+_CONFIG_FILENAMES = frozenset(
+    {".guardrail.yml", "guardrail.yaml", "guardrail.yml"}
+)
+_LOCKFILES = frozenset(
+    {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"}
+)
+
+
+def is_default_excluded_relpath(relpath: str) -> bool:
+    norm = relpath.replace("\\", "/")
+    base = Path(norm).name
+    if base in _CONFIG_FILENAMES or base in _LOCKFILES:
+        return True
+    if norm.endswith(".md"):
+        return True
+    if "/.guard/" in f"/{norm}/" or norm.startswith(".guard/"):
+        return True
+    return False
+
+
+def _rule_explicitly_targets(rule: dict[str, Any], relpath: str) -> bool:
+    if rule.get("from"):
+        return path_matches(str(rule["from"]), relpath)
+    patterns = _rule_patterns(rule, [])
+    broad = {"**/*", "**", "*"}
+    specific = [p for p in patterns if p.strip() and p.strip() not in broad]
+    return any(path_matches(p, relpath) for p in specific)
+
+
+def should_evaluate_source_file(relpath: str, rules: list[dict[str, Any]]) -> bool:
+    if not is_default_excluded_relpath(relpath):
+        return True
+    return any(_rule_explicitly_targets(rule, relpath) for rule in rules)
+
+
 RULES_FILE_CANDIDATES = (
     ".guardrail.yml",
     "guardrail.yaml",
@@ -371,6 +406,8 @@ def _evaluate_file_map(
     findings: list[dict[str, Any]] = []
 
     for relpath, text in file_map.items():
+        if not should_evaluate_source_file(relpath, rules):
+            continue
         if exclude and path_matches_any(exclude, relpath):
             continue
         if not path_matches_any(include, relpath):

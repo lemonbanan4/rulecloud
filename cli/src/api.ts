@@ -58,6 +58,40 @@ export async function fetchBundle(
   return { ...data, source: "rulespacks" };
 }
 
+export type AutofixResult = {
+  explanation?: string;
+  patched_code?: string;
+  suggestion_lines?: string;
+  diff?: string;
+  error?: string;
+  detail?: string;
+};
+
+export async function postAutofix(
+  cfg: CliConfig,
+  payload: {
+    code: string;
+    violation: Record<string, unknown>;
+    rules_yaml: string;
+  },
+): Promise<{ status: number; body: AutofixResult }> {
+  const res = await fetch(`${cfg.apiUrl}/api/ai/autofix`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": cfg.apiKey,
+    },
+    body: JSON.stringify(payload),
+  });
+  let body: AutofixResult = {};
+  try {
+    body = (await res.json()) as AutofixResult;
+  } catch {
+    body = { detail: await res.text() };
+  }
+  return { status: res.status, body };
+}
+
 export async function postWatchEvent(
   cfg: CliConfig,
   payload: {
