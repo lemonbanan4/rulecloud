@@ -49,7 +49,17 @@ export async function runAutofixForFile(opts: {
   plain: boolean;
   interactive: boolean;
 }): Promise<boolean> {
-  requireApiKey(opts.cfg);
+  try {
+    requireApiKey(opts.cfg);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "API key required";
+    console.log(
+      opts.plain
+        ? `✖ Auto-fix unavailable: ${message}`
+        : pc.red(`✖ Auto-fix unavailable: ${message}`),
+    );
+    return false;
+  }
   const targets = opts.findings
     .filter((f) => f.file === opts.relPath)
     .sort((a, b) => {
@@ -62,14 +72,31 @@ export async function runAutofixForFile(opts: {
     return false;
   }
   const violation = targets[0];
-  const { status, body } = await postAutofix(opts.cfg, {
-    code: opts.code,
-    violation: violation as unknown as Record<string, unknown>,
-    rules_yaml: opts.rulesYaml,
-  });
+  let status: number;
+  let body: Awaited<ReturnType<typeof postAutofix>>["body"];
+  try {
+    ({ status, body } = await postAutofix(opts.cfg, {
+      code: opts.code,
+      violation: violation as unknown as Record<string, unknown>,
+      rules_yaml: opts.rulesYaml,
+    }));
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Network error calling Auto-Fix API";
+    console.log(
+      opts.plain
+        ? `✖ Auto-fix unavailable: ${message}`
+        : pc.red(`✖ Auto-fix unavailable: ${message}`),
+    );
+    return false;
+  }
   if (status === 402) {
     const msg = body.detail || "AI Auto-Fix requires RuleCloud Pro";
-    console.log(opts.plain ? msg : pc.yellow(msg));
+    console.log(
+      opts.plain
+        ? `✖ Auto-fix unavailable: ${msg}`
+        : pc.red(`✖ Auto-fix unavailable: ${msg}`),
+    );
     console.log(
       opts.plain
         ? "Upgrade: https://rulecloud.vercel.app/dashboard/billing"
@@ -77,8 +104,26 @@ export async function runAutofixForFile(opts: {
     );
     return false;
   }
+  if (status === 503) {
+    const msg =
+      body.detail ||
+      body.error ||
+      "AI Copilot is not configured on the server";
+    console.log(
+      opts.plain
+        ? `✖ Auto-fix unavailable: ${msg}`
+        : pc.red(`✖ Auto-fix unavailable: ${msg}`),
+    );
+    return false;
+  }
   if (status >= 400) {
-    throw new Error(body.detail || body.error || `Auto-fix failed (${status})`);
+    const msg = body.detail || body.error || `Auto-fix failed (${status})`;
+    console.log(
+      opts.plain
+        ? `✖ Auto-fix unavailable: ${msg}`
+        : pc.red(`✖ Auto-fix unavailable: ${msg}`),
+    );
+    return false;
   }
   if (body.explanation) {
     console.log(opts.plain ? body.explanation : pc.bold(body.explanation));

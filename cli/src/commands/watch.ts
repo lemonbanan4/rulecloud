@@ -183,6 +183,14 @@ export async function runWatch(
         plain: opts.plain,
         interactive: true,
       });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Auto-fix failed";
+      console.log(
+        opts.plain
+          ? `✖ Auto-fix unavailable: ${message}`
+          : pc.red(`✖ Auto-fix unavailable: ${message}`),
+      );
     } finally {
       if (process.stdin.isTTY && !opts.plain) {
         readline.emitKeypressEvents(process.stdin);

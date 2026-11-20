@@ -58,22 +58,36 @@ Rules for suggestion_lines:
 """
 
 
+_VENDOR_KEY_ENVS: tuple[tuple[str, str], ...] = (
+    ("openai", "OPENAI_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+)
+
+
+def _env_llm_credentials() -> tuple[str, str]:
+    """Resolve provider + API key from LLM_* or vendor-specific env vars."""
+    explicit_provider = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    llm_key = (os.getenv("LLM_API_KEY") or "").strip()
+    if llm_key:
+        provider = explicit_provider or "openai"
+        return provider, llm_key
+    for provider, env_name in _VENDOR_KEY_ENVS:
+        vendor_key = (os.getenv(env_name) or "").strip()
+        if vendor_key:
+            return explicit_provider or provider, vendor_key
+    return explicit_provider or "openai", ""
+
+
 def _env_provider() -> str:
-    return (os.getenv("LLM_PROVIDER") or "openai").strip().lower()
-
-
-def _env_api_key() -> str:
-    key = (os.getenv("LLM_API_KEY") or "").strip()
-    if not key:
-        raise RuntimeError("LLM_API_KEY is not configured")
-    return key
+    provider, _ = _env_llm_credentials()
+    return provider or "openai"
 
 
 def _resolve_llm(
     workspace_id: Optional[str],
 ) -> tuple[str, str]:
-    provider = _env_provider()
-    api_key = (os.getenv("LLM_API_KEY") or "").strip()
+    provider, api_key = _env_llm_credentials()
     if workspace_id:
         try:
             from workspace_ai import get_workspace_ai_store
@@ -88,7 +102,12 @@ def _resolve_llm(
         except Exception:  # noqa: BLE001
             logger.exception("workspace BYOK lookup failed for %s", workspace_id)
     if not api_key:
-        raise RuntimeError("LLM API key is not configured")
+        raise RuntimeError(
+            "LLM API key is not configured "
+            "(set LLM_API_KEY or OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY)"
+        )
+    if not provider:
+        provider = "openai"
     return provider, api_key
 
 
@@ -326,7 +345,8 @@ def test_llm_connection(workspace_id: Optional[str] = None) -> dict[str, str]:
 
 
 def llm_configured(workspace_id: Optional[str] = None) -> bool:
-    if (os.getenv("LLM_API_KEY") or "").strip():
+    _, env_key = _env_llm_credentials()
+    if env_key:
         return True
     if workspace_id:
         try:
