@@ -5,7 +5,7 @@ import { X } from "lucide-react";
 import { CodeEditor } from "@/components/CodeEditor";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
 import { formatDuration, formatWhen } from "@/lib/format";
-import type { JobRecord } from "@/lib/types";
+import type { JobRecord, SuppressionRecord } from "@/lib/types";
 
 export function ScanDetailDrawer({
   job,
@@ -19,6 +19,7 @@ export function ScanDetailDrawer({
   const rulesYaml =
     (typeof job.request?.rules_yaml === "string" && job.request.rules_yaml) || "";
   const findings = job.result?.findings ?? [];
+  const suppressions: SuppressionRecord[] = job.result?.suppressions ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50">
@@ -53,6 +54,31 @@ export function ScanDetailDrawer({
                 guardrail.yaml
               </p>
               <CodeEditor value={rulesYaml} readOnly rows={10} />
+            </div>
+          ) : null}
+
+          {suppressions.length > 0 ? (
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-amber-500/80">
+                Suppressions ({suppressions.length})
+              </p>
+              <ul className="space-y-2">
+                {suppressions.map((s, i) => (
+                  <li
+                    key={`sup-${i}`}
+                    className="rounded-lg border border-amber-500/20 bg-amber-950/20 p-2 text-sm"
+                  >
+                    <span className="font-mono text-xs text-zinc-300">
+                      {String(s.file)}
+                      {s.line != null ? `:${s.line}` : ""}
+                    </span>{" "}
+                    <span className="text-zinc-500">· {String(s.rule_id)}</span>
+                    {s.reason ? (
+                      <p className="mt-1 text-xs text-zinc-500">{s.reason}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
             </div>
           ) : null}
 

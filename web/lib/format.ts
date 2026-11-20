@@ -36,6 +36,10 @@ export function sourceLabel(source?: string | null): string {
       return "GitHub";
     case "mcp":
       return "MCP";
+    case "cli_watch":
+      return "CLI Watch";
+    case "playground":
+      return "Playground";
     default:
       return source || "API";
   }

@@ -13,7 +13,14 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
-from ai_copilot import AUTOFIX_PRO_DETAIL, autofix_violation, generate_rules_yaml, llm_configured
+from ai_copilot import (
+    AUTOFIX_PRO_DETAIL,
+    autofix_violation,
+    generate_rules_yaml,
+    llm_configured,
+    test_llm_connection,
+)
+from workspace_ai import create_workspace_ai_store
 from api_keys import create_api_key_store
 from auth import AuthUser, get_current_user, get_optional_user
 from billing import create_billing_store
@@ -39,6 +46,7 @@ from github_webhook import (
 from job_store import JobStore, SourceType, create_job_store
 from mcp_server import create_mcp_server
 from quota import enforce_workspace_quota, usage_for_workspace
+from rulespacks import create_rulespack_store
 from scan_auth import ScanCaller, resolve_scan_caller
 from scan_runner import guardrail_available, run_scan
 
@@ -53,6 +61,8 @@ api_key_store = create_api_key_store()
 billing = create_billing_store()
 github_store = create_github_connection_store()
 github_app_store = create_github_installation_store()
+rulespack_store = create_rulespack_store()
+workspace_ai_store = create_workspace_ai_store()
 
 _mcp_server = create_mcp_server(jobs=jobs, api_keys=api_key_store)
 _mcp_asgi = _mcp_server.http_app(
@@ -172,6 +182,34 @@ class GitHubAppCallbackRequest(BaseModel):
 
 class GitHubAppAutoFixPatch(BaseModel):
     auto_fix_comments: bool
+
+
+class RulespackCreateRequest(BaseModel):
+    slug: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    rules_yaml: str = Field(min_length=1, max_length=100_000)
+    enabled: bool = True
+
+
+class RulespackPatchRequest(BaseModel):
+    rules_yaml: Optional[str] = Field(default=None, max_length=100_000)
+    enabled: Optional[bool] = None
+    name: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+
+
+class WatchEventRequest(BaseModel):
+    file: str = Field(min_length=1, max_length=500)
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    duration_ms: int = Field(default=0, ge=0)
+    repo_label: Optional[str] = Field(default=None, max_length=200)
+
+
+class WorkspaceAiPatch(BaseModel):
+    llm_provider: Optional[str] = Field(default=None, max_length=32)
+    llm_api_key: Optional[str] = Field(default=None, max_length=500)
+    clear_api_key: bool = False
 
 
 def _infer_source_type(body: ScanRequest, webhook: bool = False) -> SourceType:
@@ -470,9 +508,9 @@ def ai_generate_rules(
     body: GenerateRulesRequest,
     user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> dict[str, str]:
-    if not llm_configured():
-        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
     workspace_id = _workspace_for_user(user)
+    if not llm_configured(workspace_id):
+        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
     plan = jobs.get_workspace_plan(workspace_id)
     try:
         return generate_rules_yaml(
@@ -492,9 +530,9 @@ def ai_autofix(
     body: AutofixRequest,
     user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> dict[str, str]:
-    if not llm_configured():
-        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
     workspace_id = _workspace_for_user(user)
+    if not llm_configured(workspace_id):
+        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
     plan = jobs.get_workspace_plan(workspace_id).strip().lower()
     if plan != "pro":
         raise HTTPException(status_code=402, detail=AUTOFIX_PRO_DETAIL)
@@ -503,10 +541,79 @@ def ai_autofix(
             code=body.code,
             violation=body.violation,
             rules_yaml=body.rules_yaml,
+            workspace_id=workspace_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("autofix failed")
         raise HTTPException(status_code=500, detail="Auto-fix failed") from exc
+
+
+@app.get("/api/workspace/ai-settings")
+def get_workspace_ai_settings(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not workspace_ai_store.enabled:
+        raise HTTPException(status_code=503, detail="Workspace AI settings not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        settings = workspace_ai_store.get_settings(workspace_id, user.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    platform_ok = bool((os.getenv("LLM_API_KEY") or "").strip())
+    return {
+        "llm_provider": settings.llm_provider,
+        "has_api_key": settings.has_api_key,
+        "platform_llm_configured": platform_ok,
+        "allowed_providers": ["openai", "gemini", "anthropic"],
+    }
+
+
+@app.patch("/api/workspace/ai-settings")
+def patch_workspace_ai_settings(
+    body: WorkspaceAiPatch,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not workspace_ai_store.enabled:
+        raise HTTPException(status_code=503, detail="Workspace AI settings not configured")
+    workspace_id = _workspace_for_user(user)
+    plan = jobs.get_workspace_plan(workspace_id).strip().lower()
+    if plan != "pro":
+        raise HTTPException(status_code=402, detail="AI Engine BYOK is available on Pro")
+    try:
+        settings = workspace_ai_store.update_settings(
+            workspace_id,
+            user.user_id,
+            llm_provider=body.llm_provider,
+            llm_api_key=body.llm_api_key,
+            clear_api_key=body.clear_api_key,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "llm_provider": settings.llm_provider,
+        "has_api_key": settings.has_api_key,
+    }
+
+
+@app.post("/api/workspace/ai-settings/test")
+def test_workspace_ai_settings(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, str]:
+    workspace_id = _workspace_for_user(user)
+    plan = jobs.get_workspace_plan(workspace_id).strip().lower()
+    if plan != "pro":
+        raise HTTPException(status_code=402, detail="AI Engine BYOK is available on Pro")
+    if not llm_configured(workspace_id):
+        raise HTTPException(status_code=503, detail="AI Copilot is not configured")
+    try:
+        return test_llm_connection(workspace_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("AI connection test failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.delete("/api/keys/{key_id}")
@@ -523,6 +630,192 @@ def revoke_api_key(
     if not ok:
         raise HTTPException(status_code=404, detail="API key not found")
     return {"revoked": True}
+
+
+def _rulespack_to_dict(pack: Any) -> dict[str, Any]:
+    return {
+        "id": pack.id,
+        "workspace_id": pack.workspace_id,
+        "slug": pack.slug,
+        "name": pack.name,
+        "description": pack.description,
+        "rules_yaml": pack.rules_yaml,
+        "enabled": pack.enabled,
+        "updated_at": pack.updated_at,
+    }
+
+
+@app.get("/api/rulespacks")
+def list_rulespacks(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not rulespack_store.enabled:
+        raise HTTPException(status_code=503, detail="Rulespacks not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        packs = rulespack_store.list_for_workspace(
+            workspace_id, user.user_id, seed_if_empty=True
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    bundle, etag = rulespack_store.bundle_for_workspace(workspace_id)
+    return {
+        "packs": [_rulespack_to_dict(p) for p in packs],
+        "bundle_etag": etag,
+        "synced_channels": ["cli", "mcp", "github_pr"],
+    }
+
+
+@app.post("/api/rulespacks")
+def create_rulespack(
+    body: RulespackCreateRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not rulespack_store.enabled:
+        raise HTTPException(status_code=503, detail="Rulespacks not configured")
+    workspace_id = _workspace_for_user(user)
+    try:
+        pack = rulespack_store.create(
+            workspace_id=workspace_id,
+            owner_id=user.user_id,
+            slug=body.slug,
+            name=body.name,
+            description=body.description,
+            rules_yaml=body.rules_yaml,
+            enabled=body.enabled,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("create rulespack failed")
+        raise HTTPException(status_code=500, detail="Could not create rulespack") from exc
+    return {"pack": _rulespack_to_dict(pack)}
+
+
+@app.patch("/api/rulespacks/{pack_id}")
+def patch_rulespack(
+    pack_id: str,
+    body: RulespackPatchRequest,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    if not rulespack_store.enabled:
+        raise HTTPException(status_code=503, detail="Rulespacks not configured")
+    if all(
+        v is None
+        for v in (body.rules_yaml, body.enabled, body.name, body.description)
+    ):
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        pack = rulespack_store.update(
+            pack_id,
+            user.user_id,
+            rules_yaml=body.rules_yaml,
+            enabled=body.enabled,
+            name=body.name,
+            description=body.description,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not pack:
+        raise HTTPException(status_code=404, detail="Rulespack not found")
+    return {"pack": _rulespack_to_dict(pack)}
+
+
+@app.delete("/api/rulespacks/{pack_id}")
+def delete_rulespack(
+    pack_id: str,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not rulespack_store.enabled:
+        raise HTTPException(status_code=503, detail="Rulespacks not configured")
+    try:
+        ok = rulespack_store.delete(pack_id, user.user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Rulespack not found")
+    return {"deleted": True}
+
+
+@app.get("/api/rulespacks/bundle")
+def rulespack_bundle(
+    caller: Annotated[ScanCaller, Depends(get_scan_caller)],
+    if_none_match: Annotated[Optional[str], Header()] = None,
+) -> Any:
+    from fastapi.responses import JSONResponse, Response
+
+    if caller.mode == "anonymous":
+        raise HTTPException(status_code=401, detail="API key or sign-in required")
+    workspace_id = caller.workspace_id
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="Workspace not resolved")
+
+    if not rulespack_store.enabled:
+        from defaults import DEFAULT_RULES_YAML
+        from rulespacks import bundle_etag
+
+        etag = bundle_etag(DEFAULT_RULES_YAML)
+        if if_none_match and if_none_match.strip('"') == etag:
+            return Response(status_code=304)
+        return JSONResponse(
+            {"rules_yaml": DEFAULT_RULES_YAML, "etag": etag},
+            headers={"ETag": f'"{etag}"'},
+        )
+
+    rulespack_store.seed_starter_packs_if_empty(workspace_id)
+
+    bundle, etag = rulespack_store.bundle_for_workspace(workspace_id)
+    if if_none_match and if_none_match.strip('"') == etag:
+        return Response(status_code=304)
+    return JSONResponse(
+        {"rules_yaml": bundle, "etag": etag},
+        headers={"ETag": f'"{etag}"'},
+    )
+
+
+@app.post("/api/watch/events", status_code=202)
+def watch_event(
+    body: WatchEventRequest,
+    caller: Annotated[ScanCaller, Depends(get_scan_caller)],
+) -> dict[str, Any]:
+    if caller.mode == "anonymous":
+        raise HTTPException(status_code=401, detail="X-API-Key required")
+    workspace_id = caller.workspace_id
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="Workspace not resolved")
+    _guard_quota(workspace_id)
+
+    violations = len(body.findings)
+    status = "pass" if violations == 0 else "violations"
+    user_id = caller.user.user_id if caller.user else None
+    bundle, _ = (
+        rulespack_store.bundle_for_workspace(workspace_id)
+        if rulespack_store.enabled
+        else (DEFAULT_RULES_YAML, "")
+    )
+
+    record = jobs.create(
+        {
+            "watch_file": body.file,
+            "repo_label": body.repo_label,
+            "source": "cli_watch",
+        },
+        user_id=user_id,
+        workspace_id=workspace_id,
+        source_type="cli_watch",
+        rules_yaml=bundle,
+    )
+    jobs.mark_running(record.job_id)
+    result = {
+        "status": status,
+        "exit_code": 1 if status == "violations" else 0,
+        "findings": body.findings,
+        "duration_ms": body.duration_ms,
+        "stdout": "",
+        "stderr": "",
+    }
+    jobs.complete(record.job_id, result)
+    return {"job_id": record.job_id, "accepted": True}
 
 
 @app.post("/api/scan", response_model=ScanResponse)

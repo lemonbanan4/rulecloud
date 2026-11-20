@@ -24,10 +24,19 @@ export type Finding = {
   raw?: Record<string, unknown>;
 };
 
+export type SuppressionRecord = {
+  file?: string;
+  line?: number;
+  rule_id?: string;
+  reason?: string;
+  directive_line?: number;
+};
+
 export type ScanResult = {
   status: string;
   exit_code: number;
   findings: Finding[];
+  suppressions?: SuppressionRecord[];
   duration_ms: number;
   stdout: string;
   stderr: string;

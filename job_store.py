@@ -13,7 +13,9 @@ from typing import Any, Literal, Optional
 logger = logging.getLogger(__name__)
 
 JobState = Literal["queued", "running", "completed", "failed"]
-SourceType = Literal["snippet", "github_webhook", "api", "mcp"]
+SourceType = Literal[
+    "snippet", "playground", "github_webhook", "api", "mcp", "cli_watch"
+]
 
 
 def _now_iso() -> str:
@@ -215,7 +217,8 @@ def _row_to_record(row: dict[str, Any]) -> JobRecord:
     if state not in ("queued", "running", "completed", "failed"):
         state = "queued"
     source = row.get("source_type") or "api"
-    if source not in ("snippet", "github_webhook", "api"):
+    allowed = ("snippet", "playground", "github_webhook", "api", "mcp", "cli_watch")
+    if source not in allowed:
         source = "api"
     created = row.get("created_at")
     if isinstance(created, str):

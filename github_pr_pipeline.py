@@ -10,11 +10,13 @@ from typing import Any, Optional
 
 from ai_copilot import autofix_violation, llm_configured
 from defaults import DEFAULT_RULES_YAML
-from github_api import GitHubClient, STATUS_CONTEXT
+from rulespacks import workspace_guardrail_bundle
+from github_api import GitHubClient, STATUS_CONTEXT, parse_previous_violation_count
 from github_pr_reviews import post_inline_review_comments
 from github_connections import REPORT_MARKER, GitHubConnectionInternal
 from job_store import JobStore
 from quota import enforce_workspace_quota
+from guardrail_eval import collect_rulecloud_suppressions
 from scan_runner import SUPPORTED_CODE_EXTENSIONS, ScanResult, run_scan_directory
 
 logger = logging.getLogger(__name__)
@@ -34,14 +36,47 @@ def _severity_rank(sev: Optional[str]) -> int:
     return 2
 
 
+def _suppressions_details_block(suppressions: list[dict[str, Any]]) -> list[str]:
+    if not suppressions:
+        return []
+    lines = [
+        "<details>",
+        f"<summary>{len(suppressions)} inline suppression(s) via <code>rulecloud-ignore</code></summary>",
+        "",
+        "| File | Line | Rule | Reason |",
+        "|---|---|---|---|",
+    ]
+    for s in suppressions[:50]:
+        loc = s.get("file") or "—"
+        line = s.get("line") or s.get("directive_line") or "—"
+        rid = s.get("rule_id") or "—"
+        reason = (s.get("reason") or "—").replace("|", "\\|")[:80]
+        lines.append(f"| `{loc}` | {line} | `{rid}` | {reason} |")
+    lines.extend(["", "</details>", ""])
+    return lines
+
+
 def _build_markdown_report(
     result: ScanResult,
     job_id: str,
     suggestions: list[str],
+    *,
+    previous_violation_count: Optional[int] = None,
+    suppressions_audit: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     status = result.status
-    badge = "✅ Pass" if status == "pass" else "❌ Violations" if status == "violations" else "⚠️ Error"
     count = len(result.findings)
+    if status == "pass" and count == 0:
+        if previous_violation_count is not None and previous_violation_count > 0:
+            badge = "✅ Fixed since last push"
+        else:
+            badge = "✅ 0 blocking violations — Ready to merge"
+    elif status == "pass":
+        badge = "✅ Pass"
+    elif status == "violations":
+        badge = "❌ Violations"
+    else:
+        badge = "⚠️ Scan error"
     lines = [
         REPORT_MARKER,
         f"## RuleCloud Guardrail",
@@ -54,6 +89,16 @@ def _build_markdown_report(
         f"| **Report** | [Open in RuleCloud]({_frontend_scans_url(job_id)}) |",
         "",
     ]
+    if (
+        status == "pass"
+        and count == 0
+        and previous_violation_count is not None
+        and previous_violation_count > 0
+    ):
+        lines.append(
+            f"> Resolved **{previous_violation_count}** violation(s) since the previous push."
+        )
+        lines.append("")
     if result.findings:
         lines.append("| Rule | File | Severity | Message |")
         lines.append("|---|---|---|---|")
@@ -71,6 +116,8 @@ def _build_markdown_report(
         lines.append("")
     if result.error:
         lines.append(f"> Scan error: {result.error}")
+    audit = suppressions_audit or result.suppressions or []
+    lines.extend(_suppressions_details_block(audit))
     return "\n".join(lines)
 
 
@@ -117,8 +164,10 @@ def _suggestion_blocks(
     files: dict[str, str],
     rules_yaml: str,
     limit: int = 5,
+    *,
+    workspace_id: Optional[str] = None,
 ) -> list[str]:
-    if not llm_configured():
+    if not llm_configured(workspace_id):
         return []
     ranked = sorted(findings, key=lambda f: _severity_rank(str(f.get("severity"))))
     blocks: list[str] = []
@@ -132,19 +181,23 @@ def _suggestion_blocks(
                 code=code,
                 violation=finding,
                 rules_yaml=rules_yaml,
+                workspace_id=workspace_id,
             )
         except Exception:  # noqa: BLE001
             logger.exception("autofix skipped for %s", file_path)
             continue
-        patched = fix.get("patched_code") or ""
         explanation = fix.get("explanation") or "Suggested fix"
-        # Use first changed hunk lines for suggestion if small enough
-        lines = patched.strip().splitlines()
-        suggestion_body = (
-            patched.strip()
-            if len(lines) <= 12
-            else "\n".join(lines[:12]) + "\n// …"
-        )
+        suggestion_body = (fix.get("suggestion_lines") or "").strip()
+        if not suggestion_body:
+            patched = fix.get("patched_code") or ""
+            lines = patched.strip().splitlines()
+            line_no = int(finding.get("line") or 0)
+            if line_no > 0 and line_no <= len(lines):
+                suggestion_body = lines[line_no - 1]
+            elif len(lines) <= 12:
+                suggestion_body = patched.strip()
+            else:
+                suggestion_body = "\n".join(lines[:12]) + "\n// …"
         line = finding.get("line")
         loc = f"{file_path}:{line}" if line else file_path
         blocks.append(
@@ -192,11 +245,19 @@ def process_pull_request(
         target_url=target_url,
     )
 
+    job_id: Optional[str] = None
+    previous_violations: Optional[int] = None
+    prior = gh.find_report_comment(owner, repo_name, pr_number, REPORT_MARKER)
+    if prior:
+        previous_violations = parse_previous_violation_count(prior[1])
+
     try:
         pr_files = gh.list_pr_files(owner, repo_name, pr_number)
-        rules_yaml = (
-            gh.get_rules_yaml_at_ref(owner, repo_name, sha) or DEFAULT_RULES_YAML
-        )
+        rules_yaml = gh.get_rules_yaml_at_ref(owner, repo_name, sha)
+        if not rules_yaml:
+            rules_yaml = workspace_guardrail_bundle(workspace_id)
+        if not rules_yaml:
+            rules_yaml = DEFAULT_RULES_YAML
 
         record = jobs.create(
             {
@@ -241,10 +302,29 @@ def process_pull_request(
             and result.findings
         ):
             suggestions = _suggestion_blocks(
-                result.findings, file_contents, rules_yaml, limit=5
+                result.findings,
+                file_contents,
+                rules_yaml,
+                limit=5,
+                workspace_id=workspace_id,
             )
 
-        body = _build_markdown_report(result, job_id, suggestions)
+        suppressions_audit = list(result.suppressions or [])
+        for item in collect_rulecloud_suppressions(file_contents):
+            key = (item.get("file"), item.get("line"), item.get("rule_id"))
+            if not any(
+                (s.get("file"), s.get("line"), s.get("rule_id")) == key
+                for s in suppressions_audit
+            ):
+                suppressions_audit.append(item)
+
+        body = _build_markdown_report(
+            result,
+            job_id,
+            suggestions,
+            previous_violation_count=previous_violations,
+            suppressions_audit=suppressions_audit,
+        )
         gh.upsert_pr_comment(owner, repo_name, pr_number, body, REPORT_MARKER)
 
         if result.status == "violations" and result.findings:
@@ -260,6 +340,7 @@ def process_pull_request(
                 rules_yaml=rules_yaml,
                 auto_fix=connection.auto_fix_comments,
                 plan_pro=plan == "pro",
+                workspace_id=workspace_id,
             )
 
         scan_url = _frontend_scans_url(job_id)
@@ -286,8 +367,8 @@ def process_pull_request(
                 owner,
                 repo_name,
                 sha,
-                state="error",
-                description=result.error or "Scan error",
+                state="failure",
+                description=(result.error or "RuleCloud scan failed")[:140],
                 target_url=scan_url,
             )
         logger.info(
@@ -296,14 +377,15 @@ def process_pull_request(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("PR pipeline failed for %s", full_name)
-        jobs.fail(job_id, str(exc))
+        if job_id:
+            jobs.fail(job_id, str(exc))
         gh.set_commit_status(
             owner,
             repo_name,
             sha,
-            state="error",
+            state="failure",
             description="RuleCloud scan failed",
-            target_url=_frontend_scans_url(job_id),
+            target_url=_frontend_scans_url(job_id or "error"),
         )
 
 

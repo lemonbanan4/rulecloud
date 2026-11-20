@@ -37,6 +37,7 @@ class ScanResult:
     status: ScanStatus
     exit_code: int
     findings: list[dict[str, Any]] = field(default_factory=list)
+    suppressions: list[dict[str, Any]] = field(default_factory=list)
     stdout: str = ""
     stderr: str = ""
     duration_ms: int = 0
@@ -48,6 +49,7 @@ class ScanResult:
             "status": self.status,
             "exit_code": self.exit_code,
             "findings": self.findings,
+            "suppressions": self.suppressions,
             "duration_ms": self.duration_ms,
             "stdout": self.stdout,
             "stderr": self.stderr,
@@ -341,21 +343,25 @@ def _resolve_scan_status(
 
 def _run_hybrid_scan(scan_root: Path, rules_yaml: str, start: float) -> ScanResult:
     _write_guard_rules(scan_root, rules_yaml)
-    python_findings = evaluate_rules_on_tree(scan_root, rules_yaml)
+    python_findings, suppressions = evaluate_rules_on_tree(scan_root, rules_yaml)
     go_findings, cli_meta = _run_go_guardrail(scan_root)
     merged = _merge_findings(python_findings, go_findings)
     status, error, exit_code = _resolve_scan_status(merged, cli_meta)
+    if status == "error":
+        exit_code = exit_code if exit_code not in (0, None) else -1
     duration_ms = int((time.perf_counter() - start) * 1000)
     meta = {
         "cli": cli_meta,
         "python_findings_count": len(python_findings),
         "go_findings_count": len(go_findings),
         "merged_count": len(merged),
+        "suppressions_count": len(suppressions),
     }
     return ScanResult(
         status=status,
         exit_code=exit_code if exit_code is not None else 0,
         findings=merged,
+        suppressions=suppressions,
         stdout=cli_meta.get("stdout", ""),
         stderr=cli_meta.get("stderr", ""),
         duration_ms=duration_ms,

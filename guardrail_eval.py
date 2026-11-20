@@ -26,6 +26,12 @@ SKIP_DIRS = {
     ".guardrail",
 }
 
+RULECLOUD_IGNORE_RE = re.compile(
+    r"rulecloud-ignore:\s*([\w.-]+)(?:\s*--\s*(.+))?",
+    re.IGNORECASE,
+)
+
+
 RULES_FILE_CANDIDATES = (
     ".guardrail.yml",
     "guardrail.yaml",
@@ -113,6 +119,86 @@ def _finding_key(f: dict[str, Any]) -> tuple[str, str, int]:
     file_ = str(f.get("file") or "")
     line = int(f.get("line") or 0)
     return (rid, file_, line)
+
+
+def parse_rulecloud_ignores(line: str) -> list[tuple[str, str]]:
+    """Return [(rule_id, reason), ...] from a single source line."""
+    out: list[tuple[str, str]] = []
+    for match in RULECLOUD_IGNORE_RE.finditer(line):
+        rid = match.group(1).strip()
+        reason = (match.group(2) or "").strip()
+        if rid:
+            out.append((rid, reason))
+    return out
+
+
+def suppression_for_finding(
+    *,
+    relpath: str,
+    violation_line: int,
+    rule_id: str,
+    lines: list[str],
+) -> Optional[dict[str, Any]]:
+    """Match rulecloud-ignore on the violating line or the line above."""
+    for offset in (0, -1):
+        idx = violation_line - 1 + offset
+        if idx < 0 or idx >= len(lines):
+            continue
+        for rid, reason in parse_rulecloud_ignores(lines[idx]):
+            if rid == rule_id or rid.lower() in ("*", "all"):
+                return {
+                    "file": relpath,
+                    "line": violation_line,
+                    "rule_id": rule_id,
+                    "reason": reason,
+                    "directive_line": idx + 1,
+                }
+    return None
+
+
+def collect_rulecloud_suppressions(file_map: dict[str, str]) -> list[dict[str, Any]]:
+    """All rulecloud-ignore directives in the tree (for PR audit blocks)."""
+    out: list[dict[str, Any]] = []
+    for relpath, text in file_map.items():
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for rid, reason in parse_rulecloud_ignores(line):
+                out.append(
+                    {
+                        "file": relpath,
+                        "line": lineno,
+                        "rule_id": rid,
+                        "reason": reason,
+                    }
+                )
+    return out
+
+
+def apply_suppressions_to_findings(
+    findings: list[dict[str, Any]],
+    file_map: dict[str, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    active: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = []
+    for finding in findings:
+        relpath = str(finding.get("file") or "")
+        line = int(finding.get("line") or 0)
+        rule_id = str(finding.get("id") or "")
+        text = file_map.get(relpath)
+        if not text or line <= 0 or not rule_id:
+            active.append(finding)
+            continue
+        lines = text.splitlines()
+        hit = suppression_for_finding(
+            relpath=relpath,
+            violation_line=line,
+            rule_id=rule_id,
+            lines=lines,
+        )
+        if hit:
+            suppressed.append(hit)
+        else:
+            active.append(finding)
+    return active, suppressed
 
 
 def dedupe_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -280,7 +366,7 @@ def _iter_scan_files(scan_root: Path) -> list[tuple[str, Path]]:
 def _evaluate_file_map(
     file_map: dict[str, str],
     data: dict[str, Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     include, exclude, rules = _normalize_rules_list(data)
     findings: list[dict[str, Any]] = []
 
@@ -307,27 +393,28 @@ def _evaluate_file_map(
             if rule_type in ("regex", "pattern", "") or rule.get("pattern") or rule.get("regex"):
                 findings.extend(_eval_regex_rule(rule, relpath, lines, patterns))
 
-    return dedupe_findings(findings)
+    raw = dedupe_findings(findings)
+    return apply_suppressions_to_findings(raw, file_map)
 
 
 def evaluate_rules_on_files(
     file_map: dict[str, str], rules_yaml: str
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     try:
         data = parse_rules_document(rules_yaml)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Python evaluator could not parse rules: %s", exc)
-        return []
+        return [], []
     return _evaluate_file_map(file_map, data)
 
 
-def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> list[dict[str, Any]]:
+def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Evaluate rules against all files under scan_root."""
     try:
         data = parse_rules_document(rules_yaml)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Python evaluator could not parse rules: %s", exc)
-        return []
+        return [], []
 
     file_map: dict[str, str] = {}
     for relpath, path in _iter_scan_files(scan_root):

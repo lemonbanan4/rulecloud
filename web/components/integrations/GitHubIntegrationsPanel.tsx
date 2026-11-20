@@ -13,6 +13,7 @@ import {
 import { useAuth } from "@/contexts/auth-context";
 import { useUsage } from "@/hooks/use-usage";
 import { apiBase, apiFetch } from "@/lib/api";
+import { BranchProtectionCallout } from "@/components/integrations/BranchProtectionCallout";
 import { parseGithubInstallationId } from "@/lib/parse-github-installation-id";
 
 const API_WEBHOOK = `${apiBase()}/api/webhook/github`;
@@ -380,6 +381,8 @@ export function GitHubIntegrationsPanel({
           {toast}
         </p>
       ) : null}
+
+      <BranchProtectionCallout />
 
       <article className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-5">
         <h2 className="text-sm font-semibold text-zinc-100">Install RuleCloud GitHub App</h2>

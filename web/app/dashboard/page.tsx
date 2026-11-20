@@ -2,20 +2,29 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Activity, CheckCircle2, ShieldAlert, Gauge } from "lucide-react";
+import { Activity, CheckCircle2, ShieldAlert, Gauge, Radio } from "lucide-react";
 
 import { ScanDetailDrawer } from "@/components/ScanDetailDrawer";
 import { ConsoleCard } from "@/components/ui/ConsoleCard";
 import { StatusDot } from "@/components/ui/StatusDot";
-import { useJobs } from "@/hooks/use-jobs";
+import { useJobsPoll } from "@/hooks/use-jobs-poll";
 import { useUsage } from "@/hooks/use-usage";
 import { formatRelativeShort, sourceLabel } from "@/lib/format";
 import type { JobRecord } from "@/lib/types";
 
 export default function OverviewPage() {
-  const { jobs, loading, fetchJob } = useJobs();
+  const [livePolling, setLivePolling] = useState(true);
+  const { jobs, loading, fetchJob } = useJobsPoll(5000, livePolling);
   const { usage } = useUsage();
   const [drawerJob, setDrawerJob] = useState<JobRecord | null>(null);
+
+  const liveAgentJobs = useMemo(
+    () =>
+      jobs
+        .filter((j) => j.source_type === "cli_watch" || j.source_type === "mcp")
+        .slice(0, 12),
+    [jobs],
+  );
 
   const metrics = useMemo(() => {
     const anchorMs = jobs.reduce((max, j) => {
@@ -111,6 +120,63 @@ export default function OverviewPage() {
           );
         })}
       </div>
+
+      <ConsoleCard className="p-0 overflow-hidden">
+        <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Radio
+              className={`h-4 w-4 ${livePolling ? "text-emerald-400" : "text-zinc-600"}`}
+              strokeWidth={1.5}
+            />
+            <h2 className="text-sm font-semibold text-zinc-100">Live Agent Activity</h2>
+            {livePolling ? (
+              <span className="text-[10px] uppercase text-emerald-400/80">Live · 5s</span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => setLivePolling((v) => !v)}
+            className="text-xs text-zinc-500 hover:text-zinc-300"
+          >
+            {livePolling ? "Pause" : "Resume"} polling
+          </button>
+        </div>
+        {liveAgentJobs.length === 0 ? (
+          <p className="p-4 text-sm text-zinc-500">
+            No CLI watch or MCP scans yet — run <code className="text-zinc-400">rulecloud watch</code>{" "}
+            in your repo.
+          </p>
+        ) : (
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-white/[0.08] text-xs uppercase text-zinc-500">
+              <tr>
+                <th className="px-4 py-2">Source</th>
+                <th className="px-4 py-2">Findings</th>
+                <th className="px-4 py-2">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {liveAgentJobs.map((j) => (
+                <tr
+                  key={j.job_id}
+                  className="cursor-pointer border-t border-white/[0.06] hover:bg-[#18181B]"
+                  onClick={() => void openJob(j.job_id)}
+                >
+                  <td className="px-4 py-2.5">
+                    <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] uppercase">
+                      {sourceLabel(j.source_type)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-xs">{j.violation_count ?? 0}</td>
+                  <td className="px-4 py-2.5 text-xs text-zinc-500">
+                    {formatRelativeShort(j.created_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </ConsoleCard>
 
       <ConsoleCard>
         <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Scan activity</p>

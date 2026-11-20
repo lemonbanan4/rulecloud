@@ -60,26 +60,33 @@ def _suggestion_for_finding(
     finding: dict[str, Any],
     files: dict[str, str],
     rules_yaml: str,
+    *,
+    workspace_id: Optional[str] = None,
 ) -> Optional[str]:
-    if not llm_configured():
+    if not llm_configured(workspace_id):
         return None
     file_path = str(finding.get("file") or "")
     code = files.get(file_path) or files.get(file_path.lstrip("./"))
     if not code:
         return None
     try:
-        fix = autofix_violation(code=code, violation=finding, rules_yaml=rules_yaml)
+        fix = autofix_violation(
+            code=code,
+            violation=finding,
+            rules_yaml=rules_yaml,
+            workspace_id=workspace_id,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("inline autofix skipped for %s", file_path)
         return None
+    suggestion = (fix.get("suggestion_lines") or "").strip()
+    if suggestion:
+        return suggestion
     patched = (fix.get("patched_code") or "").strip()
     if not patched:
         return None
     line_no = int(finding.get("line") or 0)
     if line_no <= 0:
-        return None
-    file_lines = code.splitlines()
-    if line_no > len(file_lines):
         return None
     patched_lines = patched.splitlines()
     if line_no <= len(patched_lines):
@@ -100,6 +107,7 @@ def post_inline_review_comments(
     rules_yaml: str,
     auto_fix: bool,
     plan_pro: bool,
+    workspace_id: Optional[str] = None,
 ) -> None:
     if not findings or not gh.has_token():
         return
@@ -128,7 +136,9 @@ def post_inline_review_comments(
 
         suggestion: Optional[str] = None
         if plan_pro and auto_fix:
-            suggestion = _suggestion_for_finding(finding, file_contents, rules_yaml)
+            suggestion = _suggestion_for_finding(
+                finding, file_contents, rules_yaml, workspace_id=workspace_id
+            )
 
         comments.append(
             {

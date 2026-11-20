@@ -2,6 +2,7 @@
 
 import { Check } from "lucide-react";
 
+import { AiEnginePanel } from "@/components/billing/AiEnginePanel";
 import { BillingActions } from "@/components/BillingActions";
 import { ConsoleCard } from "@/components/ui/ConsoleCard";
 import { useAuth } from "@/contexts/auth-context";
@@ -38,6 +39,8 @@ export function BillingConsole() {
         <h1 className="text-xl font-semibold text-zinc-50">Billing</h1>
         <p className="text-sm text-zinc-500">Manage your RuleCloud workspace plan.</p>
       </div>
+
+      <AiEnginePanel isPro={current === "pro"} />
 
       {!loading && usage ? (
         <ConsoleCard>

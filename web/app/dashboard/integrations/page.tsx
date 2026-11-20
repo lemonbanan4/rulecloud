@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { GuardAgentHero } from "@/components/integrations/GuardAgentHero";
 import { GitHubIntegrationsPanel } from "@/components/integrations/GitHubIntegrationsPanel";
 import { McpIntegrationsPanel } from "@/components/integrations/McpIntegrationsPanel";
 import { SnippetsPanel } from "@/components/integrations/SnippetsPanel";
@@ -28,6 +29,8 @@ function IntegrationsPageContent() {
           GitHub App, AI IDE MCP, Actions, and direct API access.
         </p>
       </div>
+
+      <GuardAgentHero />
 
       <div className="flex gap-1 rounded-lg border border-white/[0.08] bg-[#0F0F12] p-1">
         {(

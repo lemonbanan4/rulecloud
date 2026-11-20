@@ -1,0 +1,31 @@
+{
+  "name": "rulecloud",
+  "version": "0.1.0",
+  "description": "Real-time RuleCloud guardrails for AI coding agents",
+  "bin": {
+    "rulecloud": "./dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "js-yaml": "^4.1.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "license": "MIT"
+}

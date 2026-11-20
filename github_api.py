@@ -15,6 +15,21 @@ API = "https://api.github.com"
 STATUS_CONTEXT = "RuleCloud Guardrail"
 INLINE_MARKER_PREFIX = "rulecloud-inline:"
 
+_REPORT_VIOLATIONS_RE = re.compile(
+    r"\|\s*\*\*Violations\*\*\s*\|\s*(\d+)\s*\|",
+    re.IGNORECASE,
+)
+
+
+def parse_previous_violation_count(report_body: str) -> Optional[int]:
+    match = _REPORT_VIOLATIONS_RE.search(report_body or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
 
 def inline_comment_marker(rule_id: str) -> str:
     return f"<!-- {INLINE_MARKER_PREFIX}{rule_id} -->"
@@ -155,7 +170,9 @@ class GitHubClient:
                     continue
         return None
 
-    def find_report_comment_id(self, owner: str, repo: str, pr_number: int, marker: str) -> Optional[int]:
+    def find_report_comment(
+        self, owner: str, repo: str, pr_number: int, marker: str
+    ) -> Optional[tuple[int, str]]:
         if not self._token:
             return None
         url = f"{API}/repos/{owner}/{repo}/issues/{pr_number}/comments"
@@ -166,8 +183,12 @@ class GitHubClient:
             payload = res.json()
             for comment in payload if isinstance(payload, list) else []:
                 if isinstance(comment, dict) and marker in (comment.get("body") or ""):
-                    return int(comment["id"])
+                    return int(comment["id"]), str(comment.get("body") or "")
         return None
+
+    def find_report_comment_id(self, owner: str, repo: str, pr_number: int, marker: str) -> Optional[int]:
+        found = self.find_report_comment(owner, repo, pr_number, marker)
+        return found[0] if found else None
 
     def upsert_pr_comment(
         self,

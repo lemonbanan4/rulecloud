@@ -12,6 +12,7 @@ from ai_copilot import AUTOFIX_PRO_DETAIL, autofix_violation, generate_rules_yam
 from api_keys import KEY_PREFIX, ApiKeyContext, ApiKeyStore
 from defaults import DEFAULT_RULES_YAML
 from job_store import JobStore
+from rulespacks import workspace_guardrail_bundle
 from quota import workspace_quota_blocked
 from scan_runner import run_scan
 
@@ -91,7 +92,9 @@ def create_mcp_server(*, jobs: JobStore, api_keys: ApiKeyStore) -> FastMCP:
         if blocked:
             return {"error": blocked}
 
-        rules = (rules_yaml or "").strip() or DEFAULT_RULES_YAML
+        rules = (rules_yaml or "").strip()
+        if not rules:
+            rules = workspace_guardrail_bundle(ctx.workspace_id)
         record = jobs.create(
             {
                 "code_snippet": code,
@@ -139,7 +142,7 @@ def create_mcp_server(*, jobs: JobStore, api_keys: ApiKeyStore) -> FastMCP:
         if err:
             return {"error": err}
         assert ctx is not None
-        if not llm_configured():
+        if not llm_configured(ctx.workspace_id):
             return {"error": "AI Copilot is not configured on this server (LLM_API_KEY)."}
         try:
             from fastapi import HTTPException
@@ -169,7 +172,7 @@ def create_mcp_server(*, jobs: JobStore, api_keys: ApiKeyStore) -> FastMCP:
         assert ctx is not None
         if (ctx.plan or "free").strip().lower() != "pro":
             return {"error": AUTOFIX_PRO_DETAIL}
-        if not llm_configured():
+        if not llm_configured(ctx.workspace_id):
             return {"error": "AI Copilot is not configured on this server (LLM_API_KEY)."}
         violation: dict[str, Any] = {
             "rule_id": rule_id,
@@ -181,6 +184,7 @@ def create_mcp_server(*, jobs: JobStore, api_keys: ApiKeyStore) -> FastMCP:
                 code=code,
                 violation=violation,
                 rules_yaml=DEFAULT_RULES_YAML,
+                workspace_id=ctx.workspace_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("MCP suggest_fix failed")
