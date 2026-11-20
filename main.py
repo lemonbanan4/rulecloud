@@ -19,6 +19,7 @@ from auth import AuthUser, get_current_user, get_optional_user
 from billing import create_billing_store
 from defaults import DEFAULT_RULES_YAML
 from github_app_auth import (
+    check_github_app,
     get_installation,
     github_app_configured,
     install_url_for_workspace,
@@ -275,6 +276,57 @@ def _frontend_base() -> str:
     return base
 
 
+def _try_auto_link_github_installation(payload: dict[str, Any]) -> bool:
+    """Link a new GitHub App installation to a workspace (webhook or post-install)."""
+    if not github_app_store.enabled:
+        return False
+    inst = payload.get("installation") or {}
+    raw_id = inst.get("id")
+    if raw_id is None:
+        return False
+    installation_id = int(raw_id)
+    if github_app_store.get_by_installation_id(installation_id):
+        return False
+    account = inst.get("account") or {}
+    login = str(account.get("login") or "unknown")
+    account_type = str(account.get("type") or "User")
+    workspace_id: Optional[str] = None
+
+    intent = github_app_store.single_active_link_intent()
+    if intent:
+        workspace_id = intent[0]
+    if not workspace_id and github_store.enabled:
+        workspace_id = github_store.find_workspace_id_for_repo_owner(login)
+
+    if not workspace_id:
+        logger.info(
+            "github_app_installation_unlinked",
+            extra={"installation_id": installation_id, "account": login},
+        )
+        return False
+
+    try:
+        github_app_store.upsert_from_service(
+            workspace_id=workspace_id,
+            installation_id=installation_id,
+            account_login=login,
+            account_type=account_type,
+        )
+        github_app_store.clear_link_intent(workspace_id)
+        logger.info(
+            "github_app_installation_auto_linked",
+            extra={
+                "installation_id": installation_id,
+                "workspace_id": workspace_id,
+                "account": login,
+            },
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("auto-link installation %s", installation_id)
+        return False
+
+
 @app.get("/api/defaults")
 def get_defaults() -> dict[str, str]:
     """Canonical starter guardrail rules YAML for clients."""
@@ -285,10 +337,21 @@ def get_defaults() -> dict[str, str]:
 def health() -> dict[str, Any]:
     ok, detail = guardrail_available()
     status = "ok" if ok else "degraded"
-    return {
+    out: dict[str, Any] = {
         "status": status,
         "guardrail": {"available": ok, "detail": detail},
     }
+    if github_app_configured():
+        gh = check_github_app()
+        out["github_app"] = {
+            "configured": True,
+            "ok": bool(gh.get("ok")),
+            "error": None if gh.get("ok") else gh.get("error"),
+            "app_slug": gh.get("app_slug"),
+        }
+    else:
+        out["github_app"] = {"configured": False}
+    return out
 
 
 @app.get("/api/usage")
@@ -603,7 +666,36 @@ def github_app_install_url(
     if not github_app_configured():
         return {"configured": False}
     url = install_url_for_workspace(workspace_id)
-    return {"configured": True, "url": url, "workspace_id": workspace_id}
+    check = check_github_app()
+    if github_app_store.enabled:
+        github_app_store.record_link_intent(workspace_id, user.user_id)
+    return {
+        "configured": True,
+        "url": url,
+        "workspace_id": workspace_id,
+        "github_ok": bool(check.get("ok")),
+        "github_error": None if check.get("ok") else check.get("error"),
+        "app_slug": check.get("app_slug"),
+        "app_name": check.get("app_name"),
+    }
+
+
+@app.get("/api/integrations/github-app/status")
+def github_app_status(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict[str, Any]:
+    del user  # auth gate only
+    result = check_github_app()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=503,
+            detail=str(result.get("error") or "GitHub App check failed"),
+        )
+    return {
+        "ok": True,
+        "app_slug": result.get("app_slug"),
+        "app_name": result.get("app_name"),
+    }
 
 
 @app.post("/api/integrations/github-app/callback")
@@ -618,9 +710,19 @@ def github_app_callback(
     workspace_id = _workspace_for_user(user)
     try:
         meta = get_installation(body.installation_id)
+    except RuntimeError as exc:
+        logger.error(
+            "verify installation %s failed: %s",
+            body.installation_id,
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("fetch installation %s", body.installation_id)
-        raise HTTPException(status_code=502, detail="Could not verify GitHub installation") from exc
+        logger.exception("verify installation %s unexpected error", body.installation_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"{type(exc).__name__}: {exc}",
+        ) from exc
     account = meta.get("account") or {}
     login = str(account.get("login") or "unknown")
     account_type = str(account.get("type") or "User")
@@ -634,6 +736,7 @@ def github_app_callback(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    github_app_store.clear_link_intent(workspace_id)
     try:
         repos = list_installation_repos(body.installation_id)
     except Exception:  # noqa: BLE001
@@ -784,6 +887,8 @@ async def github_webhook(
             inst = (payload.get("installation") or {}).get("id")
             if inst is not None:
                 github_app_store.delete_by_installation_id(int(inst))
+        elif action in ("created", "new_permissions_accepted"):
+            _try_auto_link_github_installation(payload)
         return {"accepted": True, "event": event_name, "action": action}
 
     if not verified:

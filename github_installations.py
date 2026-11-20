@@ -107,17 +107,15 @@ class GitHubInstallationStore:
             created_at=row.get("created_at"),
         )
 
-    def upsert(
+    def _upsert_installation_row(
         self,
         *,
         workspace_id: str,
-        owner_id: str,
         installation_id: int,
         account_login: str,
         account_type: str = "User",
         auto_fix_comments: bool = True,
     ) -> GitHubInstallation:
-        self._assert_workspace_owner(workspace_id, owner_id)
         client = self._require()
         existing = (
             client.table("github_installations")
@@ -143,12 +141,86 @@ class GitHubInstallationStore:
                 }
             ).eq("id", inst_uuid).execute()
         else:
-            ins = client.table("github_installations").insert(row).execute()
-            inst_uuid = (ins.data or [{}])[0].get("id")
+            client.table("github_installations").insert(row).execute()
         got = self.get_by_installation_id(installation_id)
         if not got:
             raise RuntimeError("upsert failed")
         return got
+
+    def upsert(
+        self,
+        *,
+        workspace_id: str,
+        owner_id: str,
+        installation_id: int,
+        account_login: str,
+        account_type: str = "User",
+        auto_fix_comments: bool = True,
+    ) -> GitHubInstallation:
+        self._assert_workspace_owner(workspace_id, owner_id)
+        return self._upsert_installation_row(
+            workspace_id=workspace_id,
+            installation_id=installation_id,
+            account_login=account_login,
+            account_type=account_type,
+            auto_fix_comments=auto_fix_comments,
+        )
+
+    def upsert_from_service(
+        self,
+        *,
+        workspace_id: str,
+        installation_id: int,
+        account_login: str,
+        account_type: str = "User",
+    ) -> GitHubInstallation:
+        """Webhook / background link (service role, no user assert)."""
+        return self._upsert_installation_row(
+            workspace_id=workspace_id,
+            installation_id=installation_id,
+            account_login=account_login,
+            account_type=account_type,
+        )
+
+    def record_link_intent(self, workspace_id: str, owner_id: str) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        client = self._require()
+        expires = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        client.table("github_app_link_intents").upsert(
+            {
+                "workspace_id": workspace_id,
+                "owner_id": owner_id,
+                "expires_at": expires,
+            },
+            on_conflict="workspace_id",
+        ).execute()
+
+    def clear_link_intent(self, workspace_id: str) -> None:
+        if not self._client:
+            return
+        self._client.table("github_app_link_intents").delete().eq(
+            "workspace_id", workspace_id
+        ).execute()
+
+    def single_active_link_intent(self) -> Optional[tuple[str, str]]:
+        from datetime import datetime, timezone
+
+        if not self._client:
+            return None
+        now = datetime.now(timezone.utc).isoformat()
+        res = (
+            self._client.table("github_app_link_intents")
+            .select("workspace_id, owner_id")
+            .gt("expires_at", now)
+            .limit(5)
+            .execute()
+        )
+        rows = res.data or []
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        return str(row["workspace_id"]), str(row["owner_id"])
 
     def delete_by_installation_id(self, installation_id: int) -> bool:
         client = self._client

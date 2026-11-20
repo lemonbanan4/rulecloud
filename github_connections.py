@@ -234,6 +234,24 @@ class GitHubConnectionStore:
         ).execute()
         return True
 
+    def find_workspace_id_for_repo_owner(self, owner: str) -> Optional[str]:
+        """Workspace that already connects a repo under this GitHub org/user (legacy PAT)."""
+        owner = (owner or "").strip().lower()
+        if not owner or not self._client:
+            return None
+        prefix = f"{owner}/"
+        res = (
+            self._client.table("github_connections")
+            .select("workspace_id")
+            .ilike("repo_full_name", f"{prefix}%")
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return None
+        return str(rows[0]["workspace_id"])
+
     def get_connection_for_webhook(
         self, repo_full_name: str
     ) -> list[GitHubConnectionInternal]:

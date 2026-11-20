@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -13,6 +13,8 @@ import {
 import { useAuth } from "@/contexts/auth-context";
 import { useUsage } from "@/hooks/use-usage";
 import { apiBase, apiFetch } from "@/lib/api";
+
+const API_WEBHOOK = `${apiBase()}/api/webhook/github`;
 
 type RepoRow = {
   id: string;
@@ -43,15 +45,15 @@ type Props = {
 
 export function GitHubIntegrationsPanel({
   installationIdFromQuery,
-  setupAction,
   onQueryConsumed,
 }: Props) {
-  const { accessToken } = useAuth();
+  const { accessToken, loading: authLoading } = useAuth();
   const { usage } = useUsage();
   const isPro = (usage?.plan || "free").toLowerCase() === "pro";
   const [repos, setRepos] = useState<RepoRow[]>([]);
   const [appInstallations, setAppInstallations] = useState<AppInstallationRow[]>([]);
   const [appConfigured, setAppConfigured] = useState(false);
+  const [githubApiError, setGithubApiError] = useState<string | null>(null);
   const [installUrl, setInstallUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +65,8 @@ export function GitHubIntegrationsPanel({
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [linkingApp, setLinkingApp] = useState(false);
+  const [manualInstallationId, setManualInstallationId] = useState("");
+  const linkedFromQueryRef = useRef<string | null>(null);
 
   const webhookUrl =
     repos[0]?.webhook_url || `${apiBase()}/api/webhook/github`;
@@ -75,9 +79,19 @@ export function GitHubIntegrationsPanel({
         apiFetch("/api/integrations/github-app/installations", {}, accessToken),
       ]);
       if (urlRes.ok) {
-        const u = (await urlRes.json()) as { configured?: boolean; url?: string };
+        const u = (await urlRes.json()) as {
+          configured?: boolean;
+          url?: string;
+          github_ok?: boolean;
+          github_error?: string | null;
+        };
         setAppConfigured(Boolean(u.configured));
         setInstallUrl(u.url ?? null);
+        setGithubApiError(
+          u.configured && u.github_ok === false && u.github_error
+            ? u.github_error
+            : null,
+        );
       }
       if (listRes.ok) {
         const data = (await listRes.json()) as {
@@ -86,6 +100,16 @@ export function GitHubIntegrationsPanel({
         };
         setAppConfigured(Boolean(data.configured));
         setAppInstallations(data.installations ?? []);
+      } else if (listRes.status >= 400) {
+        const text = await listRes.text();
+        let msg = `Could not load installations (${listRes.status})`;
+        try {
+          const j = JSON.parse(text) as { detail?: string };
+          if (typeof j.detail === "string") msg = j.detail;
+        } catch {
+          if (text.trim()) msg = text.slice(0, 300);
+        }
+        setError(msg);
       }
     } catch {
       /* optional — app may be unconfigured */
@@ -116,12 +140,9 @@ export function GitHubIntegrationsPanel({
     return () => window.clearTimeout(t);
   }, [load]);
 
-  useEffect(() => {
-    if (!accessToken || !installationIdFromQuery) return;
-    const id = Number.parseInt(installationIdFromQuery, 10);
-    if (!Number.isFinite(id) || id < 1) return;
-    let cancelled = false;
-    const run = async () => {
+  const linkInstallation = useCallback(
+    async (installationId: number) => {
+      if (!accessToken || installationId < 1) return;
       setLinkingApp(true);
       setError(null);
       try {
@@ -129,46 +150,52 @@ export function GitHubIntegrationsPanel({
           "/api/integrations/github-app/callback",
           {
             method: "POST",
-            body: JSON.stringify({ installation_id: id }),
+            body: JSON.stringify({ installation_id: installationId }),
           },
           accessToken,
         );
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(text || `Link failed (${res.status})`);
+          let msg = text || `Link failed (${res.status})`;
+          try {
+            const j = JSON.parse(text) as { detail?: string | string[] };
+            if (typeof j.detail === "string") msg = j.detail;
+            else if (Array.isArray(j.detail)) msg = j.detail.join("; ");
+          } catch {
+            /* keep raw text */
+          }
+          throw new Error(msg);
         }
         const data = (await res.json()) as {
           account_login?: string;
           repo_count?: number;
         };
-        if (!cancelled) {
-          setToast(
-            `GitHub App linked to ${data.account_login ?? "account"} (${data.repo_count ?? 0} repos).`,
-          );
-          onQueryConsumed?.();
-          await load();
-        }
+        setToast(
+          `GitHub App linked to ${data.account_login ?? "account"} (${data.repo_count ?? 0} repos).`,
+        );
+        onQueryConsumed?.();
+        setManualInstallationId("");
+        await load();
       } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Could not link installation");
-        }
+        setError(err instanceof Error ? err.message : "Could not link installation");
       } finally {
-        if (!cancelled) setLinkingApp(false);
+        setLinkingApp(false);
       }
-    };
-    if (setupAction === "install" || setupAction === "update") {
-      void run();
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    accessToken,
-    installationIdFromQuery,
-    setupAction,
-    load,
-    onQueryConsumed,
-  ]);
+    },
+    [accessToken, load, onQueryConsumed],
+  );
+
+  useEffect(() => {
+    if (authLoading || !accessToken || !installationIdFromQuery) return;
+    if (linkedFromQueryRef.current === installationIdFromQuery) return;
+    const id = Number.parseInt(installationIdFromQuery, 10);
+    if (!Number.isFinite(id) || id < 1) return;
+    linkedFromQueryRef.current = installationIdFromQuery;
+    const t = window.setTimeout(() => {
+      void linkInstallation(id);
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [authLoading, accessToken, installationIdFromQuery, linkInstallation]);
 
   useEffect(() => {
     if (!toast) return;
@@ -296,8 +323,18 @@ export function GitHubIntegrationsPanel({
           One-click install — no PAT or manual webhook. PR scans, statuses, and inline comments use
           short-lived installation tokens.
         </p>
+        {githubApiError ? (
+          <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            GitHub App API check failed: {githubApiError}
+            <span className="mt-1 block text-amber-200/80">
+              On Railway, set <code className="text-amber-50">GITHUB_APP_ID</code> to the{" "}
+              <strong>numeric App ID</strong> from GitHub App → General — not the Client ID (
+              <code className="text-amber-50">Iv23…</code>).
+            </span>
+          </p>
+        ) : null}
         <InstallButton
-          configured={appConfigured}
+          configured={appConfigured && !githubApiError}
           installUrl={installUrl}
           loading={linkingApp || loading}
         />
@@ -307,10 +344,79 @@ export function GitHubIntegrationsPanel({
             <code className="text-zinc-400">GITHUB_APP_PRIVATE_KEY</code>, and{" "}
             <code className="text-zinc-400">GITHUB_APP_WEBHOOK_SECRET</code> on Railway. Set the
             GitHub App Setup URL to{" "}
-            <code className="text-zinc-400">/dashboard/integrations</code> on this console.
+            <code className="text-zinc-400">https://rulecloud.vercel.app/dashboard/integrations</code>
+            .
           </p>
+        ) : appInstallations.length === 0 ? (
+          <div className="mt-4 space-y-3 rounded-lg border border-white/[0.06] bg-black/20 p-3">
+            <p className="text-xs text-zinc-500">
+              Installed on GitHub but not listed here? GitHub must redirect back with{" "}
+              <code className="text-zinc-400">installation_id</code>. Open{" "}
+              <a
+                href="https://github.com/settings/installations"
+                target="_blank"
+                rel="noreferrer"
+                className="text-cyan-400 hover:underline"
+              >
+                GitHub → Installed GitHub Apps
+              </a>
+              , click <span className="text-zinc-300">Configure</span> on RuleCloud Guardrail, then
+              Save — or paste the numeric ID from that page URL below.
+            </p>
+            <form
+              className="flex flex-wrap gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const id = Number.parseInt(manualInstallationId.trim(), 10);
+                if (Number.isFinite(id) && id > 0) void linkInstallation(id);
+              }}
+            >
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="Installation ID (from GitHub URL)"
+                value={manualInstallationId}
+                onChange={(e) => setManualInstallationId(e.target.value)}
+                className="min-w-[12rem] flex-1 rounded-lg border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-xs"
+              />
+              <button
+                type="submit"
+                disabled={linkingApp || !manualInstallationId.trim()}
+                className="rounded-lg border border-white/[0.1] px-3 py-2 text-xs font-medium text-zinc-200 disabled:opacity-50"
+              >
+                Link installation
+              </button>
+            </form>
+          </div>
         ) : null}
       </article>
+
+      {appInstallations.length > 0 ? (
+        <article className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-5">
+          <h2 className="text-sm font-semibold text-emerald-100">PR scan checklist</h2>
+          <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs text-zinc-400">
+            <li>
+              GitHub App → Webhook URL:{" "}
+              <code className="text-zinc-300">{API_WEBHOOK}</code>
+            </li>
+            <li>
+              Railway: <code className="text-zinc-300">GITHUB_APP_WEBHOOK_SECRET</code> matches the
+              app webhook secret on GitHub.
+            </li>
+            <li>
+              Selected repos include your target (e.g.{" "}
+              <code className="text-zinc-300">lemonbanan4/rulecloud-demo</code>).
+            </li>
+            <li>
+              Open or push a PR — RuleCloud posts a commit status and a PR comment. View runs in{" "}
+              <a href="/dashboard/scans" className="text-cyan-400 hover:underline">
+                Scans
+              </a>
+              .
+            </li>
+          </ol>
+        </article>
+      ) : null}
 
       <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0F0F12]">
         <div className="border-b border-white/[0.08] px-4 py-3">

@@ -19,6 +19,7 @@ import {
 import { HeroMockup } from "@/components/landing/HeroMockup";
 import { LiveSandbox } from "@/components/landing/LiveSandbox";
 import { useAuth } from "@/contexts/auth-context";
+import { githubInstallIntegrationsPath } from "@/lib/github-install-redirect";
 import { isSupabaseConfigured } from "@/lib/supabase";
 
 const BENTO = [
@@ -64,8 +65,16 @@ export default function HomePage() {
 
   useEffect(() => {
     if (loading) return;
+    const sp = new URLSearchParams(
+      typeof window !== "undefined" ? window.location.search : "",
+    );
+    const githubNext = githubInstallIntegrationsPath(sp);
+    if (githubNext && !user) {
+      router.replace(`/login?next=${encodeURIComponent(githubNext)}`);
+      return;
+    }
     if (user) {
-      router.replace("/dashboard");
+      router.replace(githubNext ?? "/dashboard");
     }
   }, [user, loading, router]);
 
