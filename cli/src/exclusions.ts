@@ -22,6 +22,7 @@ export function isDefaultExcludedPath(relpath: string): boolean {
   if (LOCKFILES.has(base)) return true;
   if (norm.endsWith(".md")) return true;
   if (norm.includes("/.guard/") || norm.startsWith(".guard/")) return true;
+  if (norm.startsWith(".guardrail/") || norm.includes("/.guardrail/")) return true;
   return false;
 }
 

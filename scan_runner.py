@@ -222,11 +222,15 @@ def _probe_guardrail_cli() -> dict[str, Any]:
 
 
 def _write_guard_rules(scan_root: Path, rules_yaml: str) -> None:
-    """Materialize rules for Go CLI (.guard/general) and root guardrail.yaml."""
+    """Materialize rules for Go CLI, `.guardrail/`, and legacy root files."""
     try:
         data = parse_rules_document(rules_yaml)
     except Exception:  # noqa: BLE001
         data = parse_rules_document(DEFAULT_RULES_YAML)
+
+    guardrail_dir = scan_root / ".guardrail"
+    guardrail_dir.mkdir(parents=True, exist_ok=True)
+    (guardrail_dir / "rules.yml").write_text(rules_yaml, encoding="utf-8")
 
     guard_dir = scan_root / ".guard" / "general"
     guard_dir.mkdir(parents=True, exist_ok=True)

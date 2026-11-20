@@ -49,6 +49,8 @@ def is_default_excluded_relpath(relpath: str) -> bool:
         return True
     if "/.guard/" in f"/{norm}/" or norm.startswith(".guard/"):
         return True
+    if norm.startswith(".guardrail/") or "/.guardrail/" in f"/{norm}/":
+        return True
     return False
 
 
@@ -67,7 +69,9 @@ def should_evaluate_source_file(relpath: str, rules: list[dict[str, Any]]) -> bo
     return any(_rule_explicitly_targets(rule, relpath) for rule in rules)
 
 
-RULES_FILE_CANDIDATES = (
+GUARDRAIL_DIR_NAME = ".guardrail"
+
+RULES_ROOT_FALLBACKS = (
     ".guardrail.yml",
     "guardrail.yaml",
     "guardrail.yml",
@@ -75,6 +79,85 @@ RULES_FILE_CANDIDATES = (
     ".guard/general/quality.yaml",
     ".guard/rules.yml",
 )
+
+# Legacy single-path list (`.guardrail/` is loaded via directory discovery first).
+RULES_FILE_CANDIDATES = RULES_ROOT_FALLBACKS
+
+
+def merge_rules_documents(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    if not docs:
+        raise ValueError("No rules documents to merge")
+    merged: dict[str, Any] = {
+        "version": docs[0].get("version", 1),
+        "timeout_ms": int(docs[0].get("timeout_ms") or 5000),
+        "include": [],
+        "exclude": [],
+        "rules": [],
+    }
+    include: list[str] = []
+    exclude: list[str] = []
+    rules: list[dict[str, Any]] = []
+    for doc in docs:
+        for item in doc.get("include") or []:
+            s = str(item)
+            if s and s not in include:
+                include.append(s)
+        for item in doc.get("exclude") or []:
+            s = str(item)
+            if s and s not in exclude:
+                exclude.append(s)
+        for rule in doc.get("rules") or []:
+            if isinstance(rule, dict) and rule.get("id"):
+                rules.append(rule)
+    merged["include"] = include or ["**/*"]
+    merged["exclude"] = exclude
+    merged["rules"] = rules
+    return merged
+
+
+def rules_yaml_from_texts(texts: list[str]) -> str:
+    if not texts:
+        return ""
+    if len(texts) == 1:
+        return texts[0]
+    docs = [parse_rules_document(t) for t in texts]
+    return yaml.safe_dump(merge_rules_documents(docs), sort_keys=False)
+
+
+def discover_rules_paths(scan_root: Path) -> list[Path]:
+    """Resolve rules file paths: `.guardrail/*.yml` first, then root fallbacks."""
+    guardrail_dir = scan_root / GUARDRAIL_DIR_NAME
+    if guardrail_dir.is_dir():
+        files = sorted(
+            (
+                p
+                for p in guardrail_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in (".yml", ".yaml")
+            ),
+            key=lambda p: p.name.lower(),
+        )
+        if files:
+            return files
+    for name in RULES_ROOT_FALLBACKS:
+        candidate = scan_root / name
+        if candidate.is_file():
+            return [candidate]
+    return []
+
+
+def load_rules_yaml_from_tree(scan_root: Path) -> Optional[str]:
+    paths = discover_rules_paths(scan_root)
+    if not paths:
+        return None
+    texts: list[str] = []
+    for p in paths:
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if raw.strip():
+            texts.append(raw)
+    return rules_yaml_from_texts(texts) if texts else None
 
 
 def parse_rules_document(yaml_text: str) -> dict[str, Any]:

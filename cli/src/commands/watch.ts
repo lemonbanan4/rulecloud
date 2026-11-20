@@ -238,6 +238,8 @@ export async function runWatch(
             ".next",
             "dist",
             ".cursor",
+            ".guard",
+            ".guardrail",
             "venv",
             ".venv",
           ].includes(p),

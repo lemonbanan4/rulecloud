@@ -1,6 +1,6 @@
 {
   "name": "rulecloud",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Real-time RuleCloud guardrails for AI coding agents",
   "keywords": [
     "rulecloud",

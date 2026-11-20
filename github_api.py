@@ -144,30 +144,57 @@ class GitHubClient:
                 return None
             return text
 
+    def list_directory_at_ref(
+        self, owner: str, repo: str, dir_path: str, ref: str
+    ) -> Optional[list[dict[str, Any]]]:
+        if not self._token:
+            return None
+        dir_path = dir_path.strip().strip("/")
+        url = f"{API}/repos/{owner}/{repo}/contents/{dir_path}"
+        with httpx.Client(timeout=30.0) as client:
+            res = client.get(url, headers=self._headers(), params={"ref": ref})
+            if res.status_code != 200:
+                return None
+            payload = res.json()
+            if not isinstance(payload, list):
+                return None
+            return [e for e in payload if isinstance(e, dict)]
+
     def get_rules_yaml_at_ref(self, owner: str, repo: str, ref: str) -> Optional[str]:
         if not self._token:
             return None
-        from guardrail_eval import RULES_FILE_CANDIDATES
+        from guardrail_eval import (
+            GUARDRAIL_DIR_NAME,
+            RULES_ROOT_FALLBACKS,
+            rules_yaml_from_texts,
+        )
 
-        paths = RULES_FILE_CANDIDATES
-        for path in paths:
-            url = f"{API}/repos/{owner}/{repo}/contents/{path}"
-            with httpx.Client(timeout=30.0) as client:
-                res = client.get(url, headers=self._headers(), params={"ref": ref})
-                if res.status_code != 200:
-                    continue
-                payload = res.json()
-                if not isinstance(payload, dict):
-                    continue
-                content = payload.get("content")
-                if not content:
-                    continue
-                try:
-                    raw = base64.b64decode(content).decode("utf-8")
-                    if raw.strip():
-                        return raw
-                except Exception:  # noqa: BLE001
-                    continue
+        entries = self.list_directory_at_ref(owner, repo, GUARDRAIL_DIR_NAME, ref)
+        if entries:
+            yaml_entries = sorted(
+                (
+                    e
+                    for e in entries
+                    if e.get("type") == "file"
+                    and (e.get("name") or "").lower().endswith((".yml", ".yaml"))
+                ),
+                key=lambda e: (e.get("name") or "").lower(),
+            )
+            texts: list[str] = []
+            for entry in yaml_entries:
+                rel = entry.get("path") or f"{GUARDRAIL_DIR_NAME}/{entry.get('name')}"
+                raw = self.get_file_at_ref(owner, repo, str(rel), ref)
+                if raw:
+                    texts.append(raw)
+            if texts:
+                merged = rules_yaml_from_texts(texts)
+                if merged.strip():
+                    return merged
+
+        for path in RULES_ROOT_FALLBACKS:
+            raw = self.get_file_at_ref(owner, repo, path, ref)
+            if raw and raw.strip():
+                return raw
         return None
 
     def find_report_comment(

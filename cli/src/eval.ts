@@ -24,6 +24,8 @@ const SKIP_DIRS = new Set([
   "target",
   "__pycache__",
   ".cursor",
+  ".guard",
+  ".guardrail",
 ]);
 
 export type RuleDoc = {

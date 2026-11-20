@@ -44,7 +44,7 @@ export function GuardAgentHero() {
               >
                 {NPM_PACKAGE_NAME}
               </a>
-              ). Pulls Cloud Rulespacks into <code className="text-zinc-400">.guardrail.yml</code>,
+              ). Pulls Cloud Rulespacks into <code className="text-zinc-400">.guardrail/rules.yml</code>,
               wires Cursor MCP, then run watch in your repo.
             </p>
             <hgroup className="mt-2 flex items-center gap-2 rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-zinc-200">

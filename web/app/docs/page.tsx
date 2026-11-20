@@ -139,7 +139,8 @@ export default function DocsPage() {
             </li>
           </ul>
           <p className="mt-2 text-xs text-zinc-600">
-            Place at repo root: <code>guardrail.yaml</code>, <code>.guardrail.yml</code>, or under{" "}
+            Preferred: <code>.guardrail/*.yml</code> (merged alphabetically). Fallbacks:{" "}
+            <code>guardrail.yaml</code>, <code>.guardrail.yml</code>, or{" "}
             <code>.guard/general/quality.yml</code>.
           </p>
           <CodeBlock>{GUARDRAIL_EXAMPLE}</CodeBlock>

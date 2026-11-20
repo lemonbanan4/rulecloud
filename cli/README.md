@@ -32,7 +32,7 @@ Create API keys in the [RuleCloud console](https://rulecloud.vercel.app/dashboar
 
 | Command | Description |
 |---------|-------------|
-| `rulecloud init` | Download merged `.guardrail.yml`, wire `.cursor/mcp.json` + agent rule |
+| `rulecloud init` | Download merged `.guardrail/rules.yml`, wire `.cursor/mcp.json` + agent rule |
 | `rulecloud watch` | Live HUD: initial scan + file saves (`r` rescan, `c` clear, `q` quit) |
 | `rulecloud watch --plain` | No colors / no TTY shortcuts (CI) |
 | `rulecloud watch` | Cloud Sync **ON** automatically when `RULECLOUD_API_KEY` or `.rulecloud.json` is set |

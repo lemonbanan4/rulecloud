@@ -16,7 +16,7 @@ Before marking a coding task complete:
 
 1. Run \`rulecloud check\` on changed files (or use the RuleCloud MCP \`scan_code\` tool).
 2. Fix any \`[BLOCKED]\` violations before proceeding.
-3. Keep \`.guardrail.yml\` synced via \`rulecloud init\` when Cloud Rulespacks change in the console.
+3. Keep \`.guardrail/rules.yml\` synced via \`rulecloud init\` when Cloud Rulespacks change in the console.
 `;
 
 export async function runInit(cwd: string, cfg: CliConfig): Promise<void> {
@@ -27,7 +27,9 @@ export async function runInit(cwd: string, cfg: CliConfig): Promise<void> {
   if (bundle.source === "defaults") {
     console.log("(Starter defaults — redeploy API for full Cloud Rulespacks merge)");
   }
-  const guardrailPath = path.join(cwd, ".guardrail.yml");
+  const guardrailDir = path.join(cwd, ".guardrail");
+  mkdirSync(guardrailDir, { recursive: true });
+  const guardrailPath = path.join(guardrailDir, "rules.yml");
   writeFileSync(guardrailPath, bundle.rules_yaml, "utf8");
   console.log(`Wrote ${guardrailPath} (etag: ${bundle.etag})`);
 
