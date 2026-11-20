@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 
 import { apiBase } from "@/lib/api";
+import { CLI_QUICKSTART, NPM_PACKAGE_NAME } from "@/lib/cli-install";
 
 export function McpIntegrationsPanel() {
   const [copied, setCopied] = useState<string | null>(null);
@@ -80,6 +81,11 @@ Before you mark a coding task complete or open a pull request:
   };
 
   const blocks = [
+    {
+      key: "npm-cli",
+      title: `RuleCloud CLI (npm: ${NPM_PACKAGE_NAME})`,
+      body: CLI_QUICKSTART,
+    },
     { key: "cursor", title: "Cursor — .cursor/mcp.json", body: cursorMcp },
     { key: "claude", title: "Claude Code — CLI", body: claudeCli },
     { key: "vscode", title: "VS Code / GitHub Copilot — .vscode/mcp.json", body: vscodeMcp },

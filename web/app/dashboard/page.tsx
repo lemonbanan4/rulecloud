@@ -143,8 +143,9 @@ export default function OverviewPage() {
         </div>
         {liveAgentJobs.length === 0 ? (
           <p className="p-4 text-sm text-zinc-500">
-            No CLI watch or MCP scans yet — run <code className="text-zinc-400">rulecloud watch</code>{" "}
-            in your repo.
+            No CLI watch or MCP scans yet — run{" "}
+            <code className="text-zinc-400">npx rulecloud watch</code> in your repo (
+            <code className="text-zinc-400">npx rulecloud init</code> first).
           </p>
         ) : (
           <table className="w-full text-left text-sm">

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 from ai_copilot import (
     AUTOFIX_PRO_DETAIL,
     autofix_violation,
+    format_llm_error,
     generate_rules_yaml,
     llm_configured,
     test_llm_connection,
@@ -549,7 +550,7 @@ def ai_autofix(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("autofix failed")
-        raise HTTPException(status_code=500, detail="Auto-fix failed") from exc
+        raise HTTPException(status_code=500, detail=format_llm_error(exc)) from exc
 
 
 @app.get("/api/workspace/ai-settings")
@@ -563,7 +564,7 @@ def get_workspace_ai_settings(
         settings = workspace_ai_store.get_settings(workspace_id, user.user_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    platform_ok = bool((os.getenv("LLM_API_KEY") or "").strip())
+    platform_ok = llm_configured(workspace_id)
     return {
         "llm_provider": settings.llm_provider,
         "has_api_key": settings.has_api_key,

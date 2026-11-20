@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Shield, Copy, GitBranch, Key, Webhook, Bot } from "lucide-react";
 
 import { apiBase } from "@/lib/api";
+import { CLI_QUICKSTART, NPM_PACKAGE_NAME, NPX_INIT, NPX_WATCH } from "@/lib/cli-install";
 
 const apiUrl = apiBase();
 
@@ -65,6 +66,18 @@ export default function DocsPage() {
           <h2 className="flex items-center gap-2 text-lg font-semibold text-zinc-100">
             60-second quickstart
           </h2>
+          <p className="mt-2 text-sm text-zinc-500">
+            Local agent HUD: published npm package{" "}
+            <a
+              href={`https://www.npmjs.com/package/${NPM_PACKAGE_NAME}`}
+              className="font-mono text-cyan-400 hover:underline"
+            >
+              {NPM_PACKAGE_NAME}
+            </a>{" "}
+            (<code className="text-zinc-300">{NPX_INIT}</code> then{" "}
+            <code className="text-zinc-300">{NPX_WATCH}</code> in any repo).
+          </p>
+          <CodeBlock>{CLI_QUICKSTART}</CodeBlock>
           <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm text-zinc-400">
             <li>
               <Link href="/dashboard/playground" className="text-cyan-400 hover:underline">

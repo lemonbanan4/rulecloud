@@ -65,12 +65,64 @@ _VENDOR_KEY_ENVS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _infer_provider_from_key(key: str) -> str:
+    k = key.strip()
+    if k.startswith("sk-ant-"):
+        return "anthropic"
+    if k.startswith("AIza"):
+        return "gemini"
+    if k.startswith("sk-") or k.startswith("sk_proj"):
+        return "openai"
+    return "openai"
+
+
+def format_llm_error(exc: BaseException) -> str:
+    """User-safe LLM failure text for API responses (no secrets)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        text = ""
+        try:
+            payload = exc.response.json()
+            if isinstance(payload, dict):
+                err = payload.get("error") or payload
+                if isinstance(err, dict):
+                    text = str(
+                        err.get("message") or err.get("status") or err
+                    ).strip()[:240]
+                else:
+                    text = str(err).strip()[:240]
+        except Exception:  # noqa: BLE001
+            text = (exc.response.text or "").strip()[:240]
+        if code in (401, 403):
+            return (
+                f"LLM API key rejected (HTTP {code}). "
+                "Use a Gemini key from Google AI Studio (starts with AIza) when "
+                "LLM_PROVIDER=gemini, or set OPENAI_API_KEY / ANTHROPIC_API_KEY."
+            )
+        if text:
+            return f"LLM request failed (HTTP {code}): {text}"
+        return f"LLM request failed (HTTP {code})"
+    if isinstance(exc, json.JSONDecodeError):
+        return "LLM returned invalid JSON for auto-fix"
+    msg = str(exc).strip()
+    return msg[:300] if msg else "Auto-fix failed"
+
+
 def _env_llm_credentials() -> tuple[str, str]:
     """Resolve provider + API key from LLM_* or vendor-specific env vars."""
     explicit_provider = (os.getenv("LLM_PROVIDER") or "").strip().lower()
     llm_key = (os.getenv("LLM_API_KEY") or "").strip()
     if llm_key:
-        provider = explicit_provider or "openai"
+        provider = explicit_provider or _infer_provider_from_key(llm_key)
+        if (
+            explicit_provider == "gemini"
+            and not llm_key.startswith("AIza")
+            and not (os.getenv("GEMINI_API_KEY") or "").strip()
+        ):
+            logger.warning(
+                "LLM_PROVIDER=gemini but LLM_API_KEY does not look like a Gemini key "
+                "(expected AIza... from https://aistudio.google.com/apikey)"
+            )
         return provider, llm_key
     for provider, env_name in _VENDOR_KEY_ENVS:
         vendor_key = (os.getenv(env_name) or "").strip()
@@ -115,8 +167,18 @@ def _openai_model() -> str:
     return (os.getenv("LLM_MODEL") or "gpt-4o-mini").strip()
 
 
+_GEMINI_LEGACY_MODELS = frozenset({"gemini-2.0-flash", "gemini-2.0-flash-lite"})
+
+
 def _gemini_model() -> str:
-    return (os.getenv("LLM_MODEL") or "gemini-2.0-flash").strip()
+    model = (os.getenv("LLM_MODEL") or "gemini-3.8-flash").strip()
+    if model in _GEMINI_LEGACY_MODELS:
+        logger.warning(
+            "LLM_MODEL %s is no longer available; using gemini-3.8-flash",
+            model,
+        )
+        return "gemini-3.8-flash"
+    return model
 
 
 def _anthropic_model() -> str:
@@ -174,7 +236,10 @@ def _chat_completion(
             body["generationConfig"]["responseMimeType"] = "application/json"
         with httpx.Client(timeout=timeout) as client:
             res = client.post(url, params={"key": key}, json=body)
-            res.raise_for_status()
+            try:
+                res.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(format_llm_error(exc)) from exc
             payload = res.json()
         candidates = payload.get("candidates") or []
         if not candidates:
