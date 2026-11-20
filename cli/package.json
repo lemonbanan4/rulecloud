@@ -18,11 +18,11 @@
     "directory": "cli"
   },
   "bin": {
-    "rulecloud": "./dist/index.js"
+    "rulecloud": "dist/index.js"
   },
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/index.js",
     "prepublishOnly": "npm run build"
   },
   "engines": {
