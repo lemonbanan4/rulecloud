@@ -11,6 +11,7 @@ from typing import Annotated, Any, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from ai_copilot import (
@@ -371,6 +372,90 @@ def _try_auto_link_github_installation(payload: dict[str, Any]) -> bool:
 def get_defaults() -> dict[str, str]:
     """Canonical starter guardrail rules YAML for clients."""
     return {"rules_yaml": DEFAULT_RULES_YAML}
+
+
+MCP_REGISTRY_NAME = "io.github.lemonbanan4/rulecloud"
+
+
+def _public_api_base(request: Request) -> str:
+    env = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
+    if env:
+        return env
+    return str(request.base_url).rstrip("/")
+
+
+def _mcp_cursor_snippet(mcp_url: str) -> str:
+    return (
+        '{\n  "mcpServers": {\n    "rulecloud": {\n'
+        f'      "url": "{mcp_url}",\n'
+        '      "headers": { "X-API-Key": "rc_live_YOUR_KEY" }\n'
+        "    }\n  }\n}"
+    )
+
+
+@app.get("/api/mcp")
+def mcp_setup_info(request: Request) -> JSONResponse | HTMLResponse:
+    """
+    Human-friendly MCP setup (use this URL in a browser).
+    The Streamable HTTP endpoint at /mcp/ requires an MCP client — not a browser tab.
+    """
+    base = _public_api_base(request)
+    mcp_url = f"{base}/mcp/"
+    console = (os.getenv("FRONTEND_URL") or "https://rulecloud.vercel.app").rstrip("/")
+    payload = {
+        "registry_name": MCP_REGISTRY_NAME,
+        "transport": "streamable-http",
+        "mcp_url": mcp_url,
+        "browser_note": (
+            "Opening /mcp/ in a browser returns a JSON-RPC error — that is expected. "
+            "Use an MCP client (Cursor, Claude Code, VS Code) with the config below."
+        ),
+        "api_key_url": f"{console}/dashboard/keys",
+        "docs_url": f"{console}/docs",
+        "mcp_config_example": {
+            "mcpServers": {
+                "rulecloud": {
+                    "url": mcp_url,
+                    "headers": {"X-API-Key": "rc_live_YOUR_KEY"},
+                }
+            }
+        },
+        "tools": [
+            "scan_code",
+            "get_default_rules",
+            "generate_guardrail_rules",
+            "suggest_fix",
+        ],
+    }
+    accept = (request.headers.get("accept") or "").lower()
+    if "text/html" in accept and "application/json" not in accept:
+        snippet = _mcp_cursor_snippet(mcp_url)
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>RuleCloud MCP</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }}
+    code, pre {{ background: #111; color: #eee; border-radius: 8px; }}
+    pre {{ padding: 1rem; overflow-x: auto; }}
+    a {{ color: #22d3ee; }}
+  </style>
+</head>
+<body>
+  <h1>RuleCloud MCP</h1>
+  <p><strong>{MCP_REGISTRY_NAME}</strong> · Streamable HTTP</p>
+  <p>{payload["browser_note"]}</p>
+  <p>MCP endpoint: <code>{mcp_url}</code></p>
+  <p>Create an API key: <a href="{console}/dashboard/keys">RuleCloud console → API Keys</a></p>
+  <h2>Cursor <code>.cursor/mcp.json</code></h2>
+  <pre>{snippet}</pre>
+  <p>Or run <code>npx rulecloud init</code> in your repo to wire MCP automatically.</p>
+  <p><a href="{console}/docs">Full docs</a></p>
+</body>
+</html>"""
+        return HTMLResponse(html)
+    return JSONResponse(payload)
 
 
 @app.get("/health")

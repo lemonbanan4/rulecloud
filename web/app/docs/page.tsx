@@ -157,8 +157,21 @@ export default function DocsPage() {
             <code className="text-zinc-300">Authorization: Bearer rc_live_…</code>.
           </p>
           <p className="mt-1 text-xs text-zinc-600">
-            URL: <code className="text-cyan-400">{apiUrl}/mcp/</code> (trailing slash; MCP client
-            only — not a browser tab)
+            MCP endpoint: <code className="text-cyan-400">{apiUrl}/mcp/</code> (trailing slash; IDE
+            clients only). Browser setup guide:{" "}
+            <a href={`${apiUrl}/api/mcp`} className="text-cyan-500 hover:underline">
+              {apiUrl}/api/mcp
+            </a>
+          </p>
+          <p className="mt-1 text-xs text-zinc-600">
+            Registry:{" "}
+            <code className="text-zinc-400">io.github.lemonbanan4/rulecloud</code> · GitHub:{" "}
+            <a
+              href="https://github.com/lemonbanan4/rulecloud"
+              className="text-cyan-500 hover:underline"
+            >
+              lemonbanan4/rulecloud
+            </a>
           </p>
           <CodeBlock>{`{
   "mcpServers": {
