@@ -393,8 +393,8 @@ def _mcp_cursor_snippet(mcp_url: str) -> str:
     )
 
 
-@app.get("/api/mcp")
-def mcp_setup_info(request: Request) -> JSONResponse | HTMLResponse:
+@app.get("/api/mcp", response_model=None)
+def mcp_setup_info(request: Request):
     """
     Human-friendly MCP setup (use this URL in a browser).
     The Streamable HTTP endpoint at /mcp/ requires an MCP client — not a browser tab.
