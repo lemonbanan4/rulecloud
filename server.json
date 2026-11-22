@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.lemonbanan4/rulecloud",
+  "title": "RuleCloud Guardrails",
+  "description": "Guardrail scans and rule generation for AI agents via scan_code, get_default_rules, and suggest_fix.",
+  "repository": {
+    "url": "https://github.com/lemonbanan4/rulecloud",
+    "source": "github",
+    "id": "1463972155"
+  },
+  "version": "1.0.0",
+  "websiteUrl": "https://rulecloud.vercel.app",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://rulecloud-production.up.railway.app/mcp/",
+      "headers": [
+        {
+          "name": "X-API-Key",
+          "description": "RuleCloud workspace API key (rc_live_…). Create at https://rulecloud.vercel.app/dashboard/keys",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
