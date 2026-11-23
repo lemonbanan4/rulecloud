@@ -19,6 +19,7 @@ from guardrail_eval import (
     evaluate_rules_on_tree,
     parse_rules_document,
     rules_yaml_for_go_cli,
+    should_evaluate_source_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -295,6 +296,76 @@ def _run_go_guardrail(scan_root: Path) -> tuple[list[dict[str, Any]], dict[str, 
     return findings, cli_meta
 
 
+_MATERIALIZED_RULE_FILES = frozenset(
+    {
+        ".guardrail.yml",
+        ".guardrail.yaml",
+        "guardrail.yml",
+        "guardrail.yaml",
+    }
+)
+_MATERIALIZED_RULE_DIRS = frozenset({".guard", ".guardrail"})
+
+
+def _finding_relpath(scan_root: Path, file_ref: str) -> str:
+    if not file_ref:
+        return ""
+    raw = file_ref.replace("\\", "/").strip()
+    root = scan_root.resolve()
+    try:
+        path = Path(raw)
+        if path.is_absolute():
+            return path.resolve().relative_to(root).as_posix()
+    except (ValueError, OSError):
+        pass
+    root_s = root.as_posix()
+    if raw.startswith(root_s + "/"):
+        return raw[len(root_s) + 1 :]
+    while raw.startswith("./"):
+        raw = raw[2:]
+    return raw.lstrip("/")
+
+
+def _is_materialized_rule_path(rel: str) -> bool:
+    parts = Path(rel).parts
+    if not parts:
+        return False
+    if parts[-1].lower() in _MATERIALIZED_RULE_FILES:
+        return True
+    return any(part in _MATERIALIZED_RULE_DIRS for part in parts[:-1])
+
+
+def _filter_config_findings(
+    findings: list[dict[str, Any]],
+    scan_root: Path,
+    rules_yaml: str,
+) -> list[dict[str, Any]]:
+    """Drop violations on guardrail config, lockfiles, docs, and materialized rule paths."""
+    rules = _rules_for_path_filter(rules_yaml)
+    kept: list[dict[str, Any]] = []
+    for item in findings:
+        rel = _finding_relpath(scan_root, str(item.get("file") or ""))
+        if not rel:
+            kept.append(item)
+            continue
+        if _is_materialized_rule_path(rel):
+            continue
+        if should_evaluate_source_file(rel, rules):
+            kept.append(item)
+    return kept
+
+
+def _rules_for_path_filter(rules_yaml: str) -> list[dict[str, Any]]:
+    try:
+        data = parse_rules_document(rules_yaml)
+    except Exception:  # noqa: BLE001
+        return []
+    rules = data.get("rules") or []
+    if not isinstance(rules, list):
+        return []
+    return [r for r in rules if isinstance(r, dict) and r.get("id")]
+
+
 def _merge_findings(
     python_findings: list[dict[str, Any]],
     go_findings: list[dict[str, Any]],
@@ -321,6 +392,9 @@ def _resolve_scan_status(
     exit_code = cli_meta.get("exit_code")
     if merged:
         return "violations", None, exit_code if exit_code is not None else 1
+
+    if (cli_meta.get("config_filtered_count") or 0) > 0:
+        return "pass", None, 0
 
     if cli_meta.get("skipped"):
         reason = cli_meta.get("skip_reason") or "CLI skipped"
@@ -349,7 +423,9 @@ def _run_hybrid_scan(scan_root: Path, rules_yaml: str, start: float) -> ScanResu
     _write_guard_rules(scan_root, rules_yaml)
     python_findings, suppressions = evaluate_rules_on_tree(scan_root, rules_yaml)
     go_findings, cli_meta = _run_go_guardrail(scan_root)
-    merged = _merge_findings(python_findings, go_findings)
+    merged_raw = _merge_findings(python_findings, go_findings)
+    merged = _filter_config_findings(merged_raw, scan_root, rules_yaml)
+    cli_meta["config_filtered_count"] = len(merged_raw) - len(merged)
     status, error, exit_code = _resolve_scan_status(merged, cli_meta)
     if status == "error":
         exit_code = exit_code if exit_code not in (0, None) else -1
@@ -359,6 +435,8 @@ def _run_hybrid_scan(scan_root: Path, rules_yaml: str, start: float) -> ScanResu
         "python_findings_count": len(python_findings),
         "go_findings_count": len(go_findings),
         "merged_count": len(merged),
+        "merged_before_config_filter": len(merged_raw),
+        "config_filtered_count": len(merged_raw) - len(merged),
         "suppressions_count": len(suppressions),
     }
     return ScanResult(

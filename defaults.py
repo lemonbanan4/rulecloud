@@ -54,4 +54,10 @@ rules:
     type: regex
     pattern: '(?i)\\b(TODO|FIXME)\\b'
     message: Resolve TODO/FIXME before merging
+
+  - id: no-hardcoded-secrets
+    severity: high
+    type: regex
+    pattern: (?i)(sk-ant-[a-z0-9_-]{8,}|sk-[a-z0-9]{16,}|rc_live_[a-z0-9_-]{8,}|ghp_[a-z0-9]{20,}|AKIA[0-9A-Z]{16}|(api[_-]?key|api[_-]?secret|auth[_-]?token|password)\s*[:=]\s*["'][^"'\s]{8,}["']|dangerouslyAllowBrowser\s*:\s*true)
+    message: Hardcoded secret or unsafe browser API key usage — move to server/env
 """
