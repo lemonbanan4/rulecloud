@@ -31,15 +31,10 @@ include:
   - "**/*.go"
 rules:
   - id: no-hardcoded-secrets
-    severity: high
+    severity: error
     type: regex
-    pattern: '(?i)(api_key|password|secret|token|private_key)\\s*[=:]\\s*["\\'][^"\\']{6,}["\\']'
-    message: Hardcoded credential — use environment variables or a secret manager
-  - id: aws-access-key
-    severity: critical
-    type: regex
-    pattern: 'AKIA[0-9A-Z]{16}'
-    message: Possible AWS access key in source
+    pattern: '(?i)(sk-ant-[a-z0-9_-]{8,}|sk_live_[a-z0-9]{6,}|sk-[a-z0-9]{16,}|rc_live_[a-z0-9_-]{8,}|ghp_[a-z0-9]{20,}|AKIA[0-9A-Z]{16}|dangerouslyAllowBrowser\\s*:\\s*true)'
+    message: Hardcoded secret or unsafe browser API key usage — move to server/env
 """,
     },
     {

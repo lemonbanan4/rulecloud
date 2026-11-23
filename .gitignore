@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+.rulecloud.json
 __pycache__/
 *.py[cod]
 .venv/
