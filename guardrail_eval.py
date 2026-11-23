@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -16,12 +17,15 @@ SKIP_DIRS = {
     ".git",
     "node_modules",
     "vendor",
+    "Pods",
+    ".dart_tool",
     ".venv",
     "venv",
     "__pycache__",
     "dist",
     "build",
     "target",
+    ".next",
     ".guard",
     ".guardrail",
 }
@@ -467,17 +471,89 @@ def _eval_layer_rule(
     return out
 
 
-def _iter_scan_files(scan_root: Path) -> list[tuple[str, Path]]:
+def _gitignore_line_to_globs(line: str) -> list[str]:
+    raw = line.strip()
+    if not raw or raw.startswith("#") or raw.startswith("!"):
+        return []
+    dir_only = raw.endswith("/")
+    if dir_only:
+        raw = raw[:-1]
+    if not raw:
+        return []
+    if raw.startswith("/"):
+        raw = raw[1:]
+        anchored = raw.removeprefix("./")
+        if dir_only:
+            return [f"{anchored}/**"]
+        return [anchored, f"{anchored}/**", f"**/{anchored}/**"]
+    if "/" in raw:
+        if dir_only:
+            return [f"**/{raw}/**", f"{raw}/**"]
+        return [f"**/{raw}", f"**/{raw}/**"]
+    if dir_only:
+        return [f"**/{raw}/**"]
+    return [f"**/{raw}", f"**/{raw}/**"]
+
+
+def load_gitignore_globs(scan_root: Path) -> list[str]:
+    gi = scan_root / ".gitignore"
+    if not gi.is_file():
+        return []
+    try:
+        text = gi.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    globs: list[str] = []
+    for line in text.splitlines():
+        globs.extend(_gitignore_line_to_globs(line))
+    return globs
+
+
+def _walk_ignore_globs(scan_root: Path, data: Optional[dict[str, Any]] = None) -> list[str]:
+    globs = load_gitignore_globs(scan_root)
+    if data:
+        exclude = [str(x) for x in (data.get("exclude") or [])]
+        ignore = [str(x) for x in (data.get("ignore") or [])]
+        globs.extend(exclude + ignore)
+    return globs
+
+
+def _iter_scan_files(
+    scan_root: Path, data: Optional[dict[str, Any]] = None
+) -> list[tuple[str, Path]]:
+    walk_globs = _walk_ignore_globs(scan_root, data)
     out: list[tuple[str, Path]] = []
-    for path in scan_root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(scan_root).as_posix()
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if rel.startswith(".guard/") or rel.startswith(".guardrail/"):
-            continue
-        out.append((rel, path))
+    scan_root = scan_root.resolve()
+    for dirpath, dirnames, filenames in os.walk(scan_root):
+        pruned: list[str] = []
+        for name in dirnames:
+            if name in SKIP_DIRS:
+                continue
+            abs_dir = Path(dirpath) / name
+            try:
+                rel_dir = abs_dir.relative_to(scan_root).as_posix()
+            except ValueError:
+                continue
+            if walk_globs and path_matches_any(walk_globs, f"{rel_dir}/"):
+                continue
+            if walk_globs and path_matches_any(walk_globs, rel_dir):
+                continue
+            pruned.append(name)
+        dirnames[:] = pruned
+
+        for name in filenames:
+            abs_file = Path(dirpath) / name
+            try:
+                rel = abs_file.relative_to(scan_root).as_posix()
+            except ValueError:
+                continue
+            if any(part in SKIP_DIRS for part in abs_file.parts):
+                continue
+            if rel.startswith(".guard/") or rel.startswith(".guardrail/"):
+                continue
+            if walk_globs and path_matches_any(walk_globs, rel):
+                continue
+            out.append((rel, abs_file))
     return out
 
 
@@ -537,7 +613,7 @@ def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> tuple[list[dict[
         return [], []
 
     file_map: dict[str, str] = {}
-    for relpath, path in _iter_scan_files(scan_root):
+    for relpath, path in _iter_scan_files(scan_root, data):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

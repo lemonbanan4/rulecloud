@@ -34,12 +34,13 @@ export function runCheck(cwd: string, staged: boolean, plain = false): number {
   if (loaded.warnReason) printRulesWarning(loaded.warnReason, plain);
 
   const doc = loaded.doc;
-  const files = staged ? stagedFiles(cwd) : walkSourceFiles(cwd);
+  const walkOpts = { ruleDoc: doc };
+  const files = staged ? stagedFiles(cwd) : walkSourceFiles(cwd, walkOpts);
   if (staged && files === null) {
     console.error(pc.red("git not available — scanning full tree"));
     return runCheck(cwd, false, plain);
   }
-  const targets = files ?? walkSourceFiles(cwd);
+  const targets = files ?? walkSourceFiles(cwd, walkOpts);
   const all: Finding[] = [];
   for (const abs of targets) {
     if (shouldIgnorePath(abs, cwd)) continue;

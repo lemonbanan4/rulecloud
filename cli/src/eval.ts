@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { shouldEvaluateSourceFile } from "./exclusions.js";
 import { expandExtensionIncludes, matchAny } from "./glob.js";
+import { pathHasSkipDirSegment } from "./ignore.js";
 import { hasBlocking } from "./severity.js";
 
 export type Finding = {
@@ -13,24 +14,11 @@ export type Finding = {
   severity: string;
 };
 
-const SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  ".next",
-  "dist",
-  "venv",
-  ".venv",
-  "build",
-  "target",
-  "__pycache__",
-  ".cursor",
-  ".guard",
-  ".guardrail",
-]);
-
 export type RuleDoc = {
   include: string[];
   exclude: string[];
+  /** Optional walk-time ignore globs (merged with exclude for directory walks). */
+  ignore?: string[];
   rules: Record<string, unknown>[];
 };
 
@@ -54,10 +42,11 @@ export function parseRulesYaml(text: string): RuleDoc {
     if (!include.includes(g)) include.push(g);
   }
   const exclude = Array.isArray(data?.exclude) ? data.exclude.map(String) : [];
+  const ignore = Array.isArray(data?.ignore) ? data.ignore.map(String) : [];
   const rules = Array.isArray(data?.rules)
     ? (data.rules as Record<string, unknown>[]).filter((r) => r?.id)
     : [];
-  return { include, exclude, rules };
+  return { include, exclude, ignore, rules };
 }
 
 function evalRegex(
@@ -179,8 +168,7 @@ export function shouldIgnorePath(absPath: string, root: string): boolean {
   const rel = path.relative(root, absPath);
   if (!rel || rel === ".") return false;
   if (rel.startsWith("..")) return true;
-  const parts = rel.split(path.sep);
-  return parts.some((p) => SKIP_DIRS.has(p));
+  return pathHasSkipDirSegment(root, absPath);
 }
 
 export { hasBlocking as hasCritical, hasBlocking };

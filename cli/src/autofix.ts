@@ -159,7 +159,7 @@ export async function runFixCommand(
     const { walkSourceFiles } = await import("./walk.js");
     const { evaluateFile } = await import("./eval.js");
     const { severityTier } = await import("./severity.js");
-    for (const abs of walkSourceFiles(cwd)) {
+    for (const abs of walkSourceFiles(cwd, { ruleDoc: loaded.doc })) {
       const rel = path.relative(cwd, abs).replace(/\\/g, "/");
       const findings = evaluateFile(rel, readFileSync(abs, "utf8"), loaded.doc);
       if (findings.some((f) => severityTier(f.severity) === "error")) {

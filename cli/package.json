@@ -1,6 +1,6 @@
 {
   "name": "rulecloud",
-  "version": "0.1.5",
+  "version": "1.0.1",
   "mcpName": "io.github.lemonbanan4/rulecloud",
   "description": "Real-time RuleCloud guardrails for AI coding agents",
   "keywords": [
@@ -24,6 +24,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
+    "test": "npm run build && node --test dist/walk.test.js",
     "prepublishOnly": "npm run build"
   },
   "engines": {

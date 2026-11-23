@@ -16,6 +16,7 @@ import {
   printScanLine,
   printStatusLine,
 } from "../hud.js";
+import { WalkIgnoreFilter } from "../ignore.js";
 import { loadRulesFromRepo } from "../rules-config.js";
 import { walkSourceFiles } from "../walk.js";
 
@@ -39,6 +40,7 @@ export async function runWatch(
 ): Promise<void> {
   const loaded = loadRulesFromRepo(cwd);
   const doc = loaded.doc;
+  const walkIgnore = new WalkIgnoreFilter(cwd, doc);
   const debounce = new Map<string, ReturnType<typeof setTimeout>>();
   const allByKey = new Map<string, Finding>();
   let lastRel: string | null = null;
@@ -109,7 +111,7 @@ export async function runWatch(
         : pc.cyan(`Loaded ${loaded.configLabel} (${loaded.ruleCount} rules)`),
     );
     allByKey.clear();
-    const files = walkSourceFiles(cwd);
+    const files = walkSourceFiles(cwd, { ruleDoc: doc });
     let filesWithIssues = 0;
     for (const abs of files) {
       const rel = path.relative(cwd, abs).replace(/\\/g, "/");
@@ -226,25 +228,7 @@ export async function runWatch(
   };
 
   const watcher = chokidar.watch(cwd, {
-    ignored: (watchPath) => {
-      if (watchPath === cwd) return false;
-      return path
-        .relative(cwd, watchPath)
-        .split(path.sep)
-        .some((p) =>
-          [
-            "node_modules",
-            ".git",
-            ".next",
-            "dist",
-            ".cursor",
-            ".guard",
-            ".guardrail",
-            "venv",
-            ".venv",
-          ].includes(p),
-        );
-    },
+    ignored: (watchPath) => walkIgnore.shouldIgnoreWatchPath(watchPath),
     ignoreInitial: true,
     persistent: true,
     awaitWriteFinish: {

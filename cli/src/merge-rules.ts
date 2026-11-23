@@ -4,10 +4,11 @@ import { parseRulesYaml, type RuleDoc } from "./eval.js";
 
 export function mergeRuleDocs(docs: RuleDoc[]): RuleDoc {
   if (!docs.length) {
-    return { include: ["**/*"], exclude: [], rules: [] };
+    return { include: ["**/*"], exclude: [], ignore: [], rules: [] };
   }
   const include: string[] = [];
   const exclude: string[] = [];
+  const ignore: string[] = [];
   const rules: Record<string, unknown>[] = [];
   for (const doc of docs) {
     for (const g of doc.include) {
@@ -16,6 +17,9 @@ export function mergeRuleDocs(docs: RuleDoc[]): RuleDoc {
     for (const g of doc.exclude) {
       if (!exclude.includes(g)) exclude.push(g);
     }
+    for (const g of doc.ignore ?? []) {
+      if (!ignore.includes(g)) ignore.push(g);
+    }
     for (const rule of doc.rules) {
       if (rule?.id) rules.push(rule);
     }
@@ -23,6 +27,7 @@ export function mergeRuleDocs(docs: RuleDoc[]): RuleDoc {
   return {
     include: include.length ? include : ["**/*"],
     exclude,
+    ignore,
     rules,
   };
 }
