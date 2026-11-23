@@ -464,7 +464,11 @@ def run_scan(
             scan_root = root / "snippet"
             scan_root.mkdir(parents=True, exist_ok=True)
             target_name = filename or DEFAULT_SNIPPET_FILENAME
-            (scan_root / target_name).write_text(code_snippet or "", encoding="utf-8")
+            target_path = (scan_root / target_name.lstrip("/")).resolve()
+            if not target_path.is_relative_to(scan_root.resolve()):
+                raise ValueError(f"Invalid filename: {target_name}")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(code_snippet or "", encoding="utf-8")
 
         try:
             return _run_hybrid_scan(scan_root, rules_yaml, start)
