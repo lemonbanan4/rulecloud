@@ -1,3 +1,6 @@
+
+https://github.com/user-attachments/assets/3a7f0ed3-a862-4f10-8147-48a0a9cdb515
+
 # RuleCloud
 
 Guardrails for AI-speed engineering: **Cloud Rulespacks**, a **CLI watch HUD**, **GitHub PR scans**, and an **MCP server** for Cursor and other agents.
