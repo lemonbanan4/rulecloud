@@ -19,3 +19,4 @@ node_modules/
 .vercel/
 .vercel
 supabase/.temp/
+venv/

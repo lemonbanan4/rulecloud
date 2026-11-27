@@ -32,8 +32,9 @@ npx rulecloud watch                    # live violations HUD
 Use the project **venv** — macOS `pip` on system Python 3.9 is often broken (`pip._internal.operations.build` missing).
 
 ```bash
-./scripts/install-deps.sh          # creates venv + pip install -r requirements.txt
+python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env               # NVIDIA_API_KEY, Supabase, etc.
 uvicorn main:app --reload --port 8000
 ```
