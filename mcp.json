@@ -1,10 +1,17 @@
 {
-    "mcpServers": {
-      "rulecloud": {
-        "url": "https://rulecloud-production.up.railway.app/mcp/",
-        "headers": {
-          "X-API-Key": "${env:RULECLOUD_API_KEY}"
-        }
+  "mcpServers": {
+    "rulecloud": {
+      "url": "https://rulecloud-production.up.railway.app/mcp/",
+      "headers": {
+        "X-API-Key": "${env:RULECLOUD_API_KEY}"
       }
+    },
+    "linear": {
+      "url": "https://mcp.linear.app/mcp"
+    },
+    "Triage inbound issues": {
+      "url": "https://api.arcade.dev/mcp/gw_3MYXjQnxKO0WTuQloxTDlzq1IAv",
+      "headers": {}
     }
   }
+}

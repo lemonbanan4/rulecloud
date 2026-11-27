@@ -7,6 +7,14 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 from typing import Annotated, Any, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request

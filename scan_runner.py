@@ -21,6 +21,7 @@ from guardrail_eval import (
     rules_yaml_for_go_cli,
     should_evaluate_source_file,
 )
+from semantic_classifier import evaluate_semantic_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -366,13 +367,13 @@ def _rules_for_path_filter(rules_yaml: str) -> list[dict[str, Any]]:
     return [r for r in rules if isinstance(r, dict) and r.get("id")]
 
 
-def _merge_findings(
-    python_findings: list[dict[str, Any]],
-    go_findings: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+def _merge_findings(*buckets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int]] = set()
-    for item in python_findings + go_findings:
+    flat: list[dict[str, Any]] = []
+    for bucket in buckets:
+        flat.extend(bucket)
+    for item in flat:
         rid = str(item.get("id") or "")
         file_ = str(item.get("file") or "")
         line = int(item.get("line") or 0)
@@ -423,7 +424,8 @@ def _run_hybrid_scan(scan_root: Path, rules_yaml: str, start: float) -> ScanResu
     _write_guard_rules(scan_root, rules_yaml)
     python_findings, suppressions = evaluate_rules_on_tree(scan_root, rules_yaml)
     go_findings, cli_meta = _run_go_guardrail(scan_root)
-    merged_raw = _merge_findings(python_findings, go_findings)
+    semantic_findings, semantic_meta = evaluate_semantic_classifier(scan_root, rules_yaml)
+    merged_raw = _merge_findings(python_findings, go_findings, semantic_findings)
     merged = _filter_config_findings(merged_raw, scan_root, rules_yaml)
     cli_meta["config_filtered_count"] = len(merged_raw) - len(merged)
     status, error, exit_code = _resolve_scan_status(merged, cli_meta)
@@ -434,6 +436,8 @@ def _run_hybrid_scan(scan_root: Path, rules_yaml: str, start: float) -> ScanResu
         "cli": cli_meta,
         "python_findings_count": len(python_findings),
         "go_findings_count": len(go_findings),
+        "semantic_findings_count": len(semantic_findings),
+        "semantic_classifier": semantic_meta,
         "merged_count": len(merged),
         "merged_before_config_filter": len(merged_raw),
         "config_filtered_count": len(merged_raw) - len(merged),

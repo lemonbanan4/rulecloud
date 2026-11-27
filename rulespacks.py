@@ -144,6 +144,9 @@ def merge_rulespack_yamls(yaml_texts: list[str]) -> str:
                 merged["timeout_ms"] = max(int(merged["timeout_ms"]), int(timeout))
             except (TypeError, ValueError):
                 pass
+        block = doc.get("semantic_classifier")
+        if isinstance(block, dict) and block.get("enabled"):
+            merged["semantic_classifier"] = block
     del merged["_seen"]
     if not merged["rules"]:
         return DEFAULT_RULES_YAML
