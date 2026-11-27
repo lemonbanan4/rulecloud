@@ -39,6 +39,10 @@ Create API keys in the [RuleCloud console](https://rulecloud.vercel.app/dashboar
 | `rulecloud fix [file]` | Pro AI Auto-Fix via API (`f` in watch) |
 | `rulecloud check` | Scan entire repo; exit `1` on high/critical violations |
 | `rulecloud check --staged` | Pre-commit scan of staged git files only |
+| `rulecloud sync-hooks` | Write `.cursor/hooks.json` + `.claude/settings.json` from rules |
+| `rulecloud sync-hooks --check` | Exit `1` when hook files drift from `.guardrail/rules.yml` (CI) |
+
+`sync-hooks` embeds a SHA-256 of `.guardrail/rules.yml` in hook metadata and installs guard scripts. Claude hooks include **`onFailure: "block"`** so a broken guard blocks tool calls instead of failing open.
 
 ## Ignored paths
 

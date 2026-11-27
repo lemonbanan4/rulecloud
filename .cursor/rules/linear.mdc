@@ -1,0 +1,31 @@
+---
+description: RuleCloud Linear workspace — teams, priorities, and GitHub links
+globs:
+alwaysApply: false
+---
+
+# Linear (RuleCloud)
+
+MCP: official `linear` server in `.cursor/mcp.json` (`https://mcp.linear.app/mcp`). OAuth in Cursor MCP settings; optional `LINEAR_API_KEY` in env for scripts only.
+
+## Teams
+
+| Team | Key | Owns |
+|------|-----|------|
+| Integrations | `INT` | GitHub App/webhooks, third-party connectors |
+| Platform | `PLT` | API, MCP, Supabase, Railway, guardrail engine |
+| Product | `PRD` | Console, marketing site, onboarding UX |
+
+Default template team `LEM` is deprecated—cancel onboarding issues after real teams exist.
+
+## Priorities
+
+Map work to Linear priority: **Urgent** (prod/security), **High** (integrations, blocking bugs), **Medium** (features), **Low** (chores/docs).
+
+## GitHub
+
+Link PRs/issues on Linear tickets (`attachment_url` or description). Primary repo: `lemonbanan4/rulecloud`.
+
+## Example
+
+Create High issue on Integrations: *Ship GitHub PR webhook v1* → link https://github.com/lemonbanan4/rulecloud/pull/1

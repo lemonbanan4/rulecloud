@@ -6,6 +6,7 @@ import { runInit } from "./commands/init.js";
 import { runCheck } from "./commands/check.js";
 import { runFixCommand } from "./autofix.js";
 import { runWatch } from "./commands/watch.js";
+import { runSyncHooks } from "./commands/sync-hooks.js";
 import { loadConfig } from "./config.js";
 
 function usage(): never {
@@ -15,6 +16,7 @@ Usage:
   rulecloud init              Pull Cloud Rulespacks + configure Cursor
   rulecloud watch [--cloud] [--plain] [dir]   Live HUD
   rulecloud check [--staged] [--plain] [dir] One-shot scan
+  rulecloud sync-hooks [--check]  Align Claude/Cursor hooks with .guardrail/rules.yml
   rulecloud fix [file]            AI Auto-Fix via API (Pro)
 
 Environment:
@@ -53,6 +55,10 @@ try {
     const staged = argv.includes("--staged");
     const plain = argv.includes("--plain");
     const code = runCheck(cwd, staged, plain);
+    process.exit(code);
+  } else if (cmd === "sync-hooks") {
+    const check = argv.includes("--check");
+    const code = runSyncHooks(cwd, check);
     process.exit(code);
   } else {
     usage();

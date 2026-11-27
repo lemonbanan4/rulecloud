@@ -1,6 +1,6 @@
 {
   "name": "rulecloud",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "mcpName": "io.github.lemonbanan4/rulecloud",
   "description": "Real-time RuleCloud guardrails for AI coding agents",
   "keywords": [

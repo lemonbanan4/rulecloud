@@ -19,7 +19,23 @@ Guardrails for AI-speed engineering: **Cloud Rulespacks**, a **CLI watch HUD**, 
 ```bash
 export RULECLOUD_API_KEY=rc_live_...   # from console → API Keys
 npx rulecloud init                     # writes .guardrail/rules.yml + Cursor MCP
+rulecloud sync-hooks                   # Claude + Cursor hooks tied to rules.yml
 npx rulecloud watch                    # live violations HUD
+```
+
+**Hook parity (CI):** `.github/workflows/guardrail.yml` fails PRs when `.claude/settings.json` or `.cursor/hooks.json` drift from `.guardrail/rules.yml`. After editing rules, run `rulecloud sync-hooks` and commit the updated hook files.
+
+**Claude Code fail-closed:** `sync-hooks` writes `onFailure: "block"` on PreToolUse hooks (v2.1.295+). If the guard script is missing or crashes, Claude **does not** run the tool. Cursor uses `failClosed: true` on the same guard.
+
+## Local API (Python backend)
+
+Use the project **venv** — macOS `pip` on system Python 3.9 is often broken (`pip._internal.operations.build` missing).
+
+```bash
+./scripts/install-deps.sh          # creates venv + pip install -r requirements.txt
+source venv/bin/activate
+cp .env.example .env               # NVIDIA_API_KEY, Supabase, etc.
+uvicorn main:app --reload --port 8000
 ```
 
 ## MCP (Cursor, Claude Code, VS Code)

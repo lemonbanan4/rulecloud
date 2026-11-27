@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "rulecloud": {
+    "version": 1,
+    "rulesSha256": "13cd0fd4165bbde65db22132e988e1d4c74382a7b57b2b3801e571de17dd4f63",
+    "rulesPath": ".guardrail/rules.yml"
+  },
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": ".cursor/hooks/rulecloud-guard.sh",
+        "matcher": "Shell|Read|Write|Edit|Delete",
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": ".cursor/hooks/rulecloud-guard.sh",
+        "failClosed": true
+      }
+    ]
+  }
+}

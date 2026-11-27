@@ -4,6 +4,7 @@ import path from "node:path";
 import { fetchBundle } from "../api.js";
 import type { CliConfig } from "../config.js";
 import { requireApiKey } from "../config.js";
+import { runSyncHooks } from "../sync-hooks.js";
 
 const CURSOR_RULE = `---
 description: Run RuleCloud guardrail checks before finishing edits
@@ -69,5 +70,12 @@ export async function runInit(cwd: string, cfg: CliConfig): Promise<void> {
   );
   writeFileSync(path.join(cursorDir, "rules", "rulecloud.mdc"), CURSOR_RULE, "utf8");
   console.log("Configured .cursor/mcp.json and .cursor/rules/rulecloud.mdc");
+  try {
+    runSyncHooks(cwd, false);
+  } catch (err) {
+    console.warn(
+      err instanceof Error ? err.message : "sync-hooks skipped after init",
+    );
+  }
   console.log("\nNext: rulecloud watch   # real-time agent guardrails");
 }

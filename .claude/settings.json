@@ -1,0 +1,23 @@
+{
+  "rulecloud": {
+    "version": 1,
+    "rulesSha256": "13cd0fd4165bbde65db22132e988e1d4c74382a7b57b2b3801e571de17dd4f63",
+    "rulesPath": ".guardrail/rules.yml"
+  },
+  "requiredMinimumVersion": "2.1.295",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/rulecloud-guard.sh",
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
