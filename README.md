@@ -1,3 +1,6 @@
+
+![RuleCloud Fail-Closed Guardrail Demo](./assets/demo.gif)
+
 # RuleCloud
 
 Guardrails for AI-speed engineering: **Cloud Rulespacks**, a **CLI watch HUD**, **GitHub PR scans**, and an **MCP server** for Cursor and other agents.
