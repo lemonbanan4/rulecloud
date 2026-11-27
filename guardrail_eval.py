@@ -98,6 +98,7 @@ def merge_rules_documents(docs: list[dict[str, Any]]) -> dict[str, Any]:
         "exclude": [],
         "rules": [],
     }
+    semantic_classifier: Optional[dict[str, Any]] = None
     include: list[str] = []
     exclude: list[str] = []
     rules: list[dict[str, Any]] = []
@@ -113,9 +114,14 @@ def merge_rules_documents(docs: list[dict[str, Any]]) -> dict[str, Any]:
         for rule in doc.get("rules") or []:
             if isinstance(rule, dict) and rule.get("id"):
                 rules.append(rule)
+        block = doc.get("semantic_classifier")
+        if isinstance(block, dict) and block.get("enabled"):
+            semantic_classifier = block
     merged["include"] = include or ["**/*"]
     merged["exclude"] = exclude
     merged["rules"] = rules
+    if semantic_classifier is not None:
+        merged["semantic_classifier"] = semantic_classifier
     return merged
 
 
@@ -604,13 +610,15 @@ def evaluate_rules_on_files(
     return _evaluate_file_map(file_map, data)
 
 
-def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Evaluate rules against all files under scan_root."""
+def collect_scannable_file_map(
+    scan_root: Path, rules_yaml: str
+) -> dict[str, str]:
+    """Read scannable source files under scan_root (respects rules include/exclude/gitignore)."""
     try:
         data = parse_rules_document(rules_yaml)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Python evaluator could not parse rules: %s", exc)
-        return [], []
+        logger.warning("Could not parse rules for file map: %s", exc)
+        return {}
 
     file_map: dict[str, str] = {}
     for relpath, path in _iter_scan_files(scan_root, data):
@@ -620,6 +628,18 @@ def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> tuple[list[dict[
             continue
         if text.strip():
             file_map[relpath] = text
+    return file_map
+
+
+def evaluate_rules_on_tree(scan_root: Path, rules_yaml: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Evaluate rules against all files under scan_root."""
+    try:
+        data = parse_rules_document(rules_yaml)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Python evaluator could not parse rules: %s", exc)
+        return [], []
+
+    file_map = collect_scannable_file_map(scan_root, rules_yaml)
     return _evaluate_file_map(file_map, data)
 
 
